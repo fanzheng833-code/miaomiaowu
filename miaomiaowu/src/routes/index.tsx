@@ -68,6 +68,7 @@ function DashboardPage() {
       },
       staleTime: 5 * 60 * 1000,
       refetchInterval: 5 * 60 * 1000,
+      meta: { showErrorInPage: true },
       enabled: Boolean(accessToken),
     })
 

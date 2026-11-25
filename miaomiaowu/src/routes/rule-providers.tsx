@@ -97,6 +97,14 @@ const EMPTY_DRAFT = {
 }
 type Draft = typeof EMPTY_DRAFT
 
+const PROVIDER_FILTERS = [
+  { value: 'all', label: '全部规则集' },
+  { value: 'manual', label: '手动维护' },
+  { value: 'remote', label: '远程抓取' },
+  { value: 'failed', label: '抓取失败' },
+] as const
+type ProviderFilter = (typeof PROVIDER_FILTERS)[number]['value']
+
 function formatSize(n: number) {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
@@ -107,18 +115,38 @@ function RuleProvidersPage() {
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState<Draft | null>(null)
   const [removing, setRemoving] = useState<RuleProvider | null>(null)
+  const [search, setSearch] = useState('')
+  const [providerFilter, setProviderFilter] = useState<ProviderFilter>('all')
   const fileRef = useRef<HTMLInputElement>(null)
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, isFetching, refetch } = useQuery({
     queryKey: ['rule-providers'],
-    queryFn: async () =>
-      (await api.get('/api/admin/rule-providers')).data as {
-        providers: RuleProvider[]
-        url_prefix: string
-      },
+    queryFn: async ({ signal }) =>
+      (
+        await api.get<{ providers: RuleProvider[]; url_prefix: string }>(
+          '/api/admin/rule-providers',
+          { signal }
+        )
+      ).data,
+    meta: { showErrorInPage: true },
   })
   const providers = data?.providers ?? []
   const prefix = data?.url_prefix ?? '/ruleset/'
+  const searchTerm = search.trim().toLowerCase()
+  const visibleProviders = providers.filter((provider) => {
+    const matchesFilter =
+      providerFilter === 'all' ||
+      (providerFilter === 'failed'
+        ? provider.source === 'remote' && Boolean(provider.last_fetch_error)
+        : provider.source === providerFilter)
+    return (
+      matchesFilter &&
+      (!searchTerm ||
+        [provider.name, provider.display_name, provider.remote_url].some(
+          (value) => value?.toLowerCase().includes(searchTerm)
+        ))
+    )
+  })
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ['rule-providers'] })
@@ -199,11 +227,33 @@ function RuleProvidersPage() {
 
         <RuleProviderFetchProxyCard />
 
-        <div className='mt-6 space-y-3'>
+        <section aria-label='规则集列表' className='mt-6 space-y-3'>
           {isLoading && (
-            <p className='text-muted-foreground text-sm'>加载中…</p>
+            <p role='status' className='text-muted-foreground text-sm'>
+              正在加载规则集…
+            </p>
           )}
-          {!isLoading && providers.length === 0 && (
+          {isError && (
+            <Card>
+              <CardContent className='flex flex-wrap items-center justify-between gap-3 py-4'>
+                <p role='alert' className='text-destructive text-sm'>
+                  {data
+                    ? '规则集更新失败，当前显示上次加载结果。'
+                    : '加载规则集失败。'}
+                </p>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={isFetching}
+                  onClick={() => void refetch()}
+                >
+                  {isFetching ? '正在重试…' : '重试'}
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+          {data && providers.length === 0 && (
             <Card>
               <CardContent className='text-muted-foreground py-10 text-center text-sm'>
                 还没有规则集。新建一个,然后在订阅模板的 rule-providers
@@ -211,7 +261,69 @@ function RuleProvidersPage() {
               </CardContent>
             </Card>
           )}
-          {providers.map((p) => (
+          {providers.length > 0 && (
+            <Card>
+              <CardContent className='space-y-3 py-4'>
+                <div className='grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_11rem_auto]'>
+                  <div className='min-w-0 space-y-1.5'>
+                    <Label htmlFor='rule-provider-search'>搜索规则集</Label>
+                    <Input
+                      id='rule-provider-search'
+                      type='search'
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      placeholder='文件名、备注名或远程地址'
+                    />
+                  </div>
+                  <div className='space-y-1.5'>
+                    <Label htmlFor='rule-provider-filter'>筛选规则集</Label>
+                    <Select
+                      value={providerFilter}
+                      onValueChange={(value) =>
+                        setProviderFilter(value as ProviderFilter)
+                      }
+                    >
+                      <SelectTrigger id='rule-provider-filter'>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {PROVIDER_FILTERS.map(({ value, label }) => (
+                          <SelectItem key={value} value={value}>
+                            {label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    className='w-fit'
+                    disabled={!search && providerFilter === 'all'}
+                    onClick={() => {
+                      setSearch('')
+                      setProviderFilter('all')
+                    }}
+                  >
+                    重置筛选
+                  </Button>
+                </div>
+                <p role='status' className='text-muted-foreground text-sm'>
+                  显示 {visibleProviders.length} 条，共 {providers.length}{' '}
+                  条规则集
+                </p>
+              </CardContent>
+            </Card>
+          )}
+          {providers.length > 0 && visibleProviders.length === 0 && (
+            <Card>
+              <CardContent className='text-muted-foreground py-10 text-center text-sm'>
+                暂无符合当前筛选条件的规则集。
+              </CardContent>
+            </Card>
+          )}
+          {visibleProviders.map((p) => (
             <Card key={p.id}>
               <CardContent className='flex flex-wrap items-center gap-3 py-4'>
                 <div className='min-w-0 flex-1 space-y-1'>
@@ -280,7 +392,7 @@ function RuleProvidersPage() {
               </CardContent>
             </Card>
           ))}
-        </div>
+        </section>
       </main>
 
       <Dialog open={!!draft} onOpenChange={(o) => !o && setDraft(null)}>

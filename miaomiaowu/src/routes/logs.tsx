@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { useEffect, useRef, useState } from 'react'
+import { type UIEvent, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, redirect } from '@tanstack/react-router'
 import { RefreshCw, ShieldBan, ShieldCheck } from 'lucide-react'
@@ -55,53 +55,190 @@ function SystemLogPanel() {
   const [q, setQ] = useState('')
   const [lines, setLines] = useState(100)
   const [autoRefresh, setAutoRefresh] = useState(true)
+  const [isFollowing, setIsFollowing] = useState(true)
+  const outputRef = useRef<HTMLDivElement>(null)
+  const followingRef = useRef(true)
+  const queryClient = useQueryClient()
+  const queryKey = ['admin-logs-system', level, q, lines]
+  const shouldPoll = autoRefresh && isFollowing
 
-  const { data, isFetching, refetch } = useQuery({
-    queryKey: ['admin-logs-system', level, q, lines],
-    queryFn: async () => {
+  const { data, isError, isFetching, isPending, refetch } = useQuery({
+    queryKey,
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams({ lines: String(lines) })
       if (level) params.set('level', level)
       if (q) params.set('q', q)
-      return (await api.get(`/api/admin/logs/system?${params.toString()}`)).data as { rows: LogRow[]; log_path?: string; note?: string; error?: string }
+      const response = await api.get(`/api/admin/logs/system?${params.toString()}`, { signal })
+      return response.data as {
+        rows: LogRow[]
+        log_path?: string
+        note?: string
+        error?: string
+      }
     },
-    refetchInterval: autoRefresh ? 5000 : false,
-    refetchIntervalInBackground: true, // 标签页失焦也继续轮询(否则切走后自动刷新会暂停)
+    meta: { showErrorInPage: true },
+    refetchInterval: shouldPoll ? 5000 : false,
+    refetchIntervalInBackground: true,
+    refetchOnReconnect: shouldPoll,
+    refetchOnWindowFocus: shouldPoll,
   })
   const rows = data?.rows ?? []
 
-  // 自动刷新时把日志滚动到底部(最新在底部)。仅当用户已在底部附近时才自动跟随,
-  // 避免用户手动往上翻看历史时被强制拽回底部。
-  const preRef = useRef<HTMLPreElement>(null)
-  useEffect(() => {
-    const el = preRef.current
-    if (!el) return
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120
-    if (nearBottom) el.scrollTop = el.scrollHeight
+  useLayoutEffect(() => {
+    const output = outputRef.current
+    // 在滚动事件中记住跟随状态，避免新日志改变高度后误判。
+    if (output && followingRef.current) output.scrollTop = output.scrollHeight
   }, [data])
 
-  return <div className='mt-4 space-y-4'>
-    <div className='flex flex-wrap items-center gap-2'>
-      <Select value={level || 'all'} onValueChange={(v) => setLevel(v === 'all' ? '' : v)}>
-        <SelectTrigger className='w-32'><SelectValue placeholder='级别' /></SelectTrigger>
-        <SelectContent>{LEVELS.map((l) => <SelectItem key={l || 'all'} value={l || 'all'}>{l || '全部级别'}</SelectItem>)}</SelectContent>
-      </Select>
-      <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder='搜索关键字' className='w-full sm:w-56' />
-      <Select value={String(lines)} onValueChange={(v) => setLines(Number(v))}>
-        <SelectTrigger className='w-28'><SelectValue /></SelectTrigger>
-        <SelectContent>{[100, 200, 500, 1000, 2000].map((n) => <SelectItem key={n} value={String(n)}>{n} 行</SelectItem>)}</SelectContent>
-      </Select>
-      <Button variant='outline' size='sm' onClick={() => refetch()} disabled={isFetching}><RefreshCw className={`h-4 w-4 ${isFetching ? 'animate-spin' : ''}`} /></Button>
-      <label className='ml-auto flex items-center gap-2 text-sm'><Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />自动刷新</label>
+  function resumeFollowing() {
+    followingRef.current = true
+    setIsFollowing(true)
+  }
+
+  function handleScroll({ currentTarget: output }: UIEvent<HTMLDivElement>) {
+    const atBottom =
+      output.scrollHeight - output.scrollTop - output.clientHeight <= 24
+    if (followingRef.current === atBottom) return
+
+    followingRef.current = atBottom
+    setIsFollowing(atBottom)
+    if (!atBottom) {
+      // 滚出尾部时冻结当前日志，避免在途轮询覆盖正在阅读的记录。
+      void queryClient.cancelQueries({ queryKey, exact: true })
+    } else if (autoRefresh) {
+      void refetch()
+    }
+  }
+
+  function jumpToLatest() {
+    resumeFollowing()
+    const output = outputRef.current
+    if (output) output.scrollTop = output.scrollHeight
+    void refetch()
+  }
+
+  return (
+    <div className='mt-4 space-y-4'>
+      <div className='flex flex-wrap items-center gap-2'>
+        <Select
+          value={level || 'all'}
+          onValueChange={(value) => {
+            resumeFollowing()
+            setLevel(value === 'all' ? '' : value)
+          }}
+        >
+          <SelectTrigger aria-label='日志级别' className='w-32'>
+            <SelectValue placeholder='级别' />
+          </SelectTrigger>
+          <SelectContent>
+            {LEVELS.map((item) => (
+              <SelectItem key={item || 'all'} value={item || 'all'}>
+                {item || '全部级别'}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Input
+          value={q}
+          onChange={(event) => {
+            resumeFollowing()
+            setQ(event.target.value)
+          }}
+          aria-label='日志关键字'
+          placeholder='搜索关键字'
+          className='w-full sm:w-56'
+        />
+        <Select
+          value={String(lines)}
+          onValueChange={(value) => {
+            resumeFollowing()
+            setLines(Number(value))
+          }}
+        >
+          <SelectTrigger aria-label='日志行数' className='w-28'>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {[100, 200, 500, 1000, 2000].map((count) => (
+              <SelectItem key={count} value={String(count)}>
+                {count} 行
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          type='button'
+          variant='outline'
+          size='sm'
+          aria-label='刷新日志'
+          onClick={() => void refetch()}
+          disabled={isFetching}
+        >
+          <RefreshCw
+            aria-hidden='true'
+            className={`h-4 w-4 ${isFetching ? 'animate-spin' : ''}`}
+          />
+        </Button>
+        <label className='ml-auto flex items-center gap-2 text-sm'>
+          <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
+          自动刷新
+        </label>
+      </div>
+      <div className='border bg-background/50'>
+        <div className='flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2'>
+          <span className='text-muted-foreground text-xs' role='status'>
+            {isFollowing
+              ? autoRefresh
+                ? '实时跟随'
+                : '仅手动刷新'
+              : '已暂停跟随'}
+          </span>
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            onClick={jumpToLatest}
+            disabled={isFollowing}
+          >
+            跳到最新
+          </Button>
+        </div>
+        {isError && data && (
+          <p className='text-destructive border-b px-3 py-2 text-sm' role='alert'>
+            日志刷新失败，当前显示上次获取的结果。
+          </p>
+        )}
+        <div
+          ref={outputRef}
+          role='region'
+          aria-label='系统日志输出'
+          tabIndex={0}
+          onScroll={handleScroll}
+          className='h-[60svh] overflow-y-auto p-3 font-mono text-xs leading-relaxed break-all whitespace-pre-wrap'
+        >
+          {rows.length > 0 ? (
+            rows.map((row, index) => <LogLine key={index} row={row} />)
+          ) : (
+            <span
+              className='text-muted-foreground'
+              role={isError && !data ? 'alert' : undefined}
+            >
+              {isPending
+                ? '正在读取日志'
+                : isError && !data
+                  ? '日志加载失败，请刷新重试。'
+                  : data?.error
+                    ? `读取日志失败：${data.error}（${data.log_path}）`
+                    : data?.note
+                      ? `${data.note}（${data.log_path}）`
+                      : '暂无日志'}
+            </span>
+          )}
+        </div>
+      </div>
+      <LogFilesPanel />
     </div>
-    <div className='border bg-background/50'>
-      <pre ref={preRef} className='h-[60svh] overflow-y-auto p-3 text-xs leading-relaxed break-all whitespace-pre-wrap'>
-        {rows.length === 0
-          ? <span className='text-muted-foreground'>{data?.error ? `读取日志失败: ${data.error}（${data.log_path}）` : data?.note ? `${data.note}（${data.log_path}）` : '暂无日志'}</span>
-          : rows.map((row, i) => <LogLine key={i} row={row} />)}
-      </pre>
-    </div>
-    <LogFilesPanel />
-  </div>
+  )
 }
 
 function LogLine({ row }: { row: LogRow }) {

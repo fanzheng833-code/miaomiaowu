@@ -1,6 +1,20 @@
-// 登录后 layout 的动态四角星背景。定时器持续在随机位置生成星星,每颗闪一次(淡入→亮→淡出)即被移除。
-// 保证每颗都是全新随机位置、此起彼伏,不会卡在固定点。仅 anime 主题显示(样式作用域见 anime-theme.css)。
-import { useEffect, useState } from 'react'
+// 登录后可见的动态四角星背景，每颗星闪烁一次后移除。
+import { useEffect, useState, useSyncExternalStore } from 'react'
+
+const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
+
+function subscribeToActivity(onChange: () => void) {
+  const motionPreference = window.matchMedia(REDUCED_MOTION_QUERY)
+  motionPreference.addEventListener('change', onChange)
+  document.addEventListener('visibilitychange', onChange)
+  return () => {
+    motionPreference.removeEventListener('change', onChange)
+    document.removeEventListener('visibilitychange', onChange)
+  }
+}
+
+const canAnimate = () =>
+  !document.hidden && !window.matchMedia(REDUCED_MOTION_QUERY).matches
 
 // 刻晴配色:紫罗兰 / 薰衣草 / 靛蓝 / 金 / 品红粉 / 白
 const COLORS = [
@@ -42,14 +56,20 @@ const SPAWN_MS = 70 // 生成间隔(越小越密)
 const MAX = 160 // 并发上限(防 animationEnd 万一不触发导致堆积)
 
 export function AnimeStarfield() {
+  const active = useSyncExternalStore(subscribeToActivity, canAnimate, () => false)
+  return active ? <AnimatedStars /> : null
+}
+
+function AnimatedStars() {
   const [stars, setStars] = useState<Star[]>([])
 
   useEffect(() => {
-    const timer = setInterval(() => {
+    const timer = window.setInterval(() => {
+      const star = makeStar()
       setStars((prev) => {
         const next =
           prev.length >= MAX ? prev.slice(prev.length - MAX + 1) : prev
-        return [...next, makeStar()]
+        return [...next, star]
       })
     }, SPAWN_MS)
     return () => clearInterval(timer)

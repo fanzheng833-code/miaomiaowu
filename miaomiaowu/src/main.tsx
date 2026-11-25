@@ -52,14 +52,17 @@ const queryClient = new QueryClient({
     },
   },
   queryCache: new QueryCache({
-    onError: (error) => {
+    onError: (error, query) => {
       if (error instanceof AxiosError) {
         if (error.response?.status === 401) {
           toast.error('Session expired!')
           useAuthStore.getState().auth.reset()
           router.navigate({ to: '/' })
         }
-        if (error.response?.status === 500) {
+        if (
+          error.response?.status === 500 &&
+          query.meta?.showErrorInPage !== true
+        ) {
           toast.error('Internal Server Error!')
           router.navigate({ to: '/' })
         }

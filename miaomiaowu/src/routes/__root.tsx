@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import { type QueryClient } from '@tanstack/react-query'
 import {
   createRootRouteWithContext,
@@ -8,6 +7,7 @@ import {
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 import { TanStackRouterDevtools } from '@tanstack/react-router-devtools'
 import { useAuthStore } from '@/stores/auth-store'
+import { useIsMobile } from '@/hooks/use-mobile'
 import { Toaster } from '@/components/ui/sonner'
 import { AnimeStarfield } from '@/components/anime-starfield'
 import { DebugFloatingViewer } from '@/components/debug-floating-viewer'
@@ -15,7 +15,7 @@ import { NavigationProgress } from '@/components/navigation-progress'
 import { Topbar } from '@/components/layout/topbar'
 
 function RootComponent() {
-  const [isMobile, setIsMobile] = useState(false)
+  const isMobile = useIsMobile()
   const { auth } = useAuthStore()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
 
@@ -25,21 +25,16 @@ function RootComponent() {
   const showTopbar =
     Boolean(auth.accessToken) && pathname !== '/login' && pathname !== '/404'
 
-  useEffect(() => {
-    const checkMobile = () => {
-      setIsMobile(window.innerWidth < 768)
-    }
-
-    checkMobile()
-    window.addEventListener('resize', checkMobile)
-
-    return () => window.removeEventListener('resize', checkMobile)
-  }, [])
+  // 主题风格在首屏脚本里设定，切换风格时页面会重新加载。
+  const showAnimeStarfield =
+    Boolean(auth.accessToken) &&
+    typeof document !== 'undefined' &&
+    document.documentElement.classList.contains('theme-anime')
 
   return (
     <>
       <NavigationProgress />
-      {auth.accessToken && <AnimeStarfield />}
+      {showAnimeStarfield && <AnimeStarfield />}
       {showTopbar && <Topbar />}
       <Outlet />
       <DebugFloatingViewer />
