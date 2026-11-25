@@ -1,6 +1,10 @@
-import { useMemo, useState } from 'react'
+import { lazy, Suspense, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { createFileRoute, redirect } from '@tanstack/react-router'
+import {
+  CatchBoundary,
+  createFileRoute,
+  redirect,
+} from '@tanstack/react-router'
 import {
   Activity,
   AlertCircle,
@@ -10,26 +14,13 @@ import {
   RefreshCw,
   TrendingUp,
 } from 'lucide-react'
-import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts'
 import { useAuthStore } from '@/stores/auth-store'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
-
-interface DailyUsage {
-  date: string
-  used_gb: number
-}
+import type { DailyUsage } from '@/components/traffic-usage-chart'
 
 interface TrafficSummary {
   metrics: {
@@ -52,6 +43,7 @@ const timeFormatter = new Intl.DateTimeFormat('zh-CN', {
   hour12: false,
 })
 const ranges = [7, 30] as const
+const TrafficUsageChart = lazy(() => import('@/components/traffic-usage-chart'))
 
 export const Route = createFileRoute('/')({
   beforeLoad: () => {
@@ -119,6 +111,13 @@ function DashboardPage() {
       icon: PieChart,
     },
   ]
+  const chartLoading = (
+    <Skeleton
+      className='size-full'
+      role='status'
+      aria-label='正在加载流量趋势'
+    />
+  )
 
   return (
     <main
@@ -259,10 +258,7 @@ function DashboardPage() {
               </div>
               <div className='h-60 min-w-0 sm:h-80'>
                 {isLoading ? (
-                  <Skeleton
-                    className='size-full'
-                    aria-label='正在加载流量趋势'
-                  />
+                  chartLoading
                 ) : chartData.length === 0 ? (
                   <div className='text-muted-foreground flex h-full flex-col items-center justify-center gap-2 text-center text-sm'>
                     <ChartNoAxesCombined
@@ -272,85 +268,14 @@ function DashboardPage() {
                     暂无历史记录
                   </div>
                 ) : (
-                  <ResponsiveContainer width='100%' height='100%'>
-                    <AreaChart
-                      accessibilityLayer
-                      data={chartData}
-                      margin={{ left: 0, right: 12, top: 12, bottom: 0 }}
-                    >
-                      <defs>
-                        <linearGradient
-                          id='daily-usage-fill'
-                          x1='0'
-                          y1='0'
-                          x2='0'
-                          y2='1'
-                        >
-                          <stop
-                            offset='0%'
-                            stopColor='var(--chart-1)'
-                            stopOpacity={0.34}
-                          />
-                          <stop
-                            offset='100%'
-                            stopColor='var(--chart-1)'
-                            stopOpacity={0.04}
-                          />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid
-                        vertical={false}
-                        stroke='var(--border)'
-                        strokeDasharray='4 4'
-                      />
-                      <XAxis
-                        dataKey='date'
-                        tickLine={false}
-                        axisLine={false}
-                        minTickGap={20}
-                        tickMargin={8}
-                        tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }}
-                        tickFormatter={(date: string) =>
-                          date.slice(5).replace('-', '/')
-                        }
-                      />
-                      <YAxis
-                        width={44}
-                        tickCount={5}
-                        tickLine={false}
-                        axisLine={false}
-                        tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }}
-                        tickFormatter={(value: number) =>
-                          numberFormatter.format(value)
-                        }
-                      />
-                      <Tooltip
-                        formatter={(usage) =>
-                          typeof usage === 'number'
-                            ? `${numberFormatter.format(usage)} GB`
-                            : '—'
-                        }
-                        cursor={{ stroke: 'var(--chart-1)' }}
-                        contentStyle={{
-                          backgroundColor: 'var(--popover)',
-                          border: '1px solid var(--border)',
-                          borderRadius: 'var(--radius)',
-                          color: 'var(--popover-foreground)',
-                        }}
-                        itemStyle={{ color: 'var(--popover-foreground)' }}
-                      />
-                      <Area
-                        type='monotone'
-                        dataKey='used_gb'
-                        name='日消耗'
-                        stroke='var(--chart-1)'
-                        fill='url(#daily-usage-fill)'
-                        strokeWidth={2}
-                        dot={chartData.length === 1}
-                        isAnimationActive={false}
-                      />
-                    </AreaChart>
-                  </ResponsiveContainer>
+                  <CatchBoundary
+                    getResetKey={() => range}
+                    errorComponent={TrafficChartError}
+                  >
+                    <Suspense fallback={chartLoading}>
+                      <TrafficUsageChart data={chartData} />
+                    </Suspense>
+                  </CatchBoundary>
                 )}
               </div>
             </CardContent>
@@ -358,6 +283,22 @@ function DashboardPage() {
         </>
       )}
     </main>
+  )
+}
+
+function TrafficChartError() {
+  return (
+    <div className='text-muted-foreground flex h-full flex-col items-center justify-center gap-3 text-center text-sm'>
+      <p role='alert'>流量趋势图加载失败</p>
+      <Button
+        variant='outline'
+        size='sm'
+        type='button'
+        onClick={() => window.location.reload()}
+      >
+        重新加载页面
+      </Button>
+    </div>
   )
 }
 

@@ -1,8 +1,6 @@
-// @ts-nocheck
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute, redirect } from '@tanstack/react-router'
-import { QRCodeCanvas } from 'qrcode.react'
 import {
   Copy,
   Download,
@@ -10,16 +8,27 @@ import {
   Network,
   QrCode,
   Smartphone,
-  ChevronDown,
-  Globe,
-  Laptop,
-  Wifi,
-  Radio,
-  Shield
 } from 'lucide-react'
+import { QRCodeCanvas } from 'qrcode.react'
 import { toast } from 'sonner'
-import { api } from '@/lib/api'
+// Import local icons
+import clashIcon from '@/assets/icons/clash_color.png'
+import egernIcon from '@/assets/icons/egern_color.png'
+import loonIcon from '@/assets/icons/loon_color.png'
+import meowxIcon from '@/assets/icons/meowx_color.png'
+import quanxIcon from '@/assets/icons/quanx_color.png'
+import shadowrocketIcon from '@/assets/icons/shadowrocket_color.png'
+import singboxIcon from '@/assets/icons/sing-box_color.png'
+import stashIcon from '@/assets/icons/stash_color.png'
+import surfboardIcon from '@/assets/icons/surfboard_color.png'
+import surgeIcon from '@/assets/icons/surge_color.png'
+import surgeMacIcon from '@/assets/icons/surgeformac_icon_color.png'
+import uriIcon from '@/assets/icons/uri-color.svg'
+import v2rayIcon from '@/assets/icons/v2ray_color.png'
 import { useAuthStore } from '@/stores/auth-store'
+import { api } from '@/lib/api'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Card,
   CardContent,
@@ -27,8 +36,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -36,34 +43,21 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 
-// Import local icons
-import clashIcon from '@/assets/icons/clash_color.png'
-import stashIcon from '@/assets/icons/stash_color.png'
-import shadowrocketIcon from '@/assets/icons/shadowrocket_color.png'
-import surfboardIcon from '@/assets/icons/surfboard_color.png'
-import surgeIcon from '@/assets/icons/surge_color.png'
-import surgeMacIcon from '@/assets/icons/surgeformac_icon_color.png'
-import loonIcon from '@/assets/icons/loon_color.png'
-import meowxIcon from '@/assets/icons/meowx_color.png'
-import quanxIcon from '@/assets/icons/quanx_color.png'
-import egernIcon from '@/assets/icons/egern_color.png'
-import singboxIcon from '@/assets/icons/sing-box_color.png'
-import v2rayIcon from '@/assets/icons/v2ray_color.png'
-import uriIcon from '@/assets/icons/uri-color.svg'
-
-// @ts-ignore - retained simple route definition
 export const Route = createFileRoute('/subscription/')({
   beforeLoad: () => {
     const token = useAuthStore.getState().auth.accessToken
@@ -89,7 +83,7 @@ type SubscribeFile = {
   latest_version?: number
 }
 
-const ICON_MAP: Record<string, any> = {
+const ICON_MAP: Record<string, typeof Smartphone> = {
   clash: Smartphone,
   'openclash-redirhost': Network,
   'openclash-fakeip': Monitor,
@@ -108,7 +102,11 @@ const CLIENT_TYPES = [
   { type: 'meowx', name: 'MeowX', icon: meowxIcon },
   { type: 'clash', name: 'Clash', icon: clashIcon },
   { type: 'stash', name: 'Stash', icon: stashIcon },
-  { type: 'clash-to-shadowrocket', name: 'Shadowrocket', icon: shadowrocketIcon },
+  {
+    type: 'clash-to-shadowrocket',
+    name: 'Shadowrocket',
+    icon: shadowrocketIcon,
+  },
   { type: 'surfboard', name: 'Surfboard', icon: surfboardIcon },
   { type: 'surge', name: 'Surge', icon: surgeIcon },
   { type: 'surgemac', name: 'Surge Mac', icon: surgeMacIcon },
@@ -126,14 +124,22 @@ const CLIENT_TYPES = [
 function SubscriptionPage() {
   const { auth } = useAuthStore()
   const [qrValue, setQrValue] = useState<string | null>(null)
-  // 为每个订阅文件保存当前显示的URL
-  const [displayURLs, setDisplayURLs] = useState<Record<number, string>>({})
+  const [selectedFormats, setSelectedFormats] = useState<
+    Record<number, string>
+  >({})
 
-  const { data: subscribeFilesData } = useQuery({
+  const {
+    data: subscribeFilesData,
+    isPending: subscriptionsPending,
+    isError: subscriptionsError,
+  } = useQuery({
     queryKey: ['user-subscriptions'],
     queryFn: async () => {
       const response = await api.get('/api/subscriptions')
-      return response.data as { subscriptions: SubscribeFile[]; user_short_code: string }
+      return response.data as {
+        subscriptions: SubscribeFile[]
+        user_short_code: string
+      }
     },
     enabled: Boolean(auth.accessToken),
     staleTime: 60 * 1000,
@@ -142,14 +148,17 @@ function SubscriptionPage() {
   const subscribeFiles = subscribeFilesData?.subscriptions ?? []
   const userShortCode = subscribeFilesData?.user_short_code ?? ''
 
-  // 只有当订阅数据已加载且 userShortCode 为空时（短链接未启用）才需要获取 token
-  const { data: tokenData } = useQuery({
+  const needsUserToken = subscribeFiles.some(
+    (file) =>
+      !userShortCode || !(file.custom_short_code || file.file_short_code)
+  )
+  const { data: tokenData, isError: tokenError } = useQuery({
     queryKey: ['user-token'],
     queryFn: async () => {
       const response = await api.get('/api/user/token')
       return response.data as { token: string }
     },
-    enabled: Boolean(auth.accessToken) && subscribeFilesData !== undefined && !userShortCode,
+    enabled: Boolean(auth.accessToken) && needsUserToken,
     staleTime: 5 * 60 * 1000,
   })
 
@@ -171,108 +180,121 @@ function SubscriptionPage() {
       ? `${window.location.protocol}//${window.location.host}`
       : 'http://localhost:8080')
 
-  const buildSubscriptionURL = (filename: string, fileShortCode: string | undefined, customShortCode: string | undefined, clientType?: string) => {
-    // Use custom short code or file short code + user short code for composite short link
-    const fileCode = customShortCode || fileShortCode
-    if (fileCode && userShortCode) {
-      const compositeCode = fileCode + userShortCode
-      const url = new URL(`/${compositeCode}`, baseURL)
-      if (clientType) {
-        url.searchParams.set('t', clientType)
-      }
-      return url.toString()
-    }
+  const buildSubscriptionURL = (file: SubscribeFile, clientType?: string) => {
+    const fileCode = file.custom_short_code || file.file_short_code
+    const shortCode = fileCode && userShortCode ? fileCode + userShortCode : ''
+    if (!shortCode && !userToken) return null
 
-    // Otherwise, use full URL with filename and user token for authentication
-    const url = new URL('/api/clash/subscribe', baseURL)
-    url.searchParams.set('filename', filename)
+    const url = new URL(
+      shortCode ? `/${shortCode}` : '/api/clash/subscribe',
+      baseURL
+    )
+    if (!shortCode) url.searchParams.set('filename', file.filename)
     if (clientType) {
       url.searchParams.set('t', clientType)
     }
-    if (userToken) {
-      url.searchParams.set('token', userToken)
-    }
+    if (!shortCode) url.searchParams.set('token', userToken)
     return url.toString()
   }
 
-  const handleCopy = async (fileId: number, urlText: string, clientName: string, clientType?: string) => {
-    // 更新该订阅文件显示的URL
-    setDisplayURLs(prev => ({ ...prev, [fileId]: urlText }))
-
+  const handleCopy = async (
+    urlText: string,
+    client?: (typeof CLIENT_TYPES)[number]
+  ) => {
     if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
       try {
         await navigator.clipboard.writeText(urlText)
-        toast.success(`${clientName} 订阅链接已复制`)
-        if (clientType === 'clash-to-shadowrocket') {
-          toast.info('请在 Shadowrocket 配置界面点击右上角 + 号，选择添加订阅链接', { duration: 5000 })
+        toast.success(
+          client ? `${client.name} 订阅链接已复制` : '订阅链接已复制'
+        )
+        if (client?.type === 'clash-to-shadowrocket') {
+          toast.info(
+            '请在 Shadowrocket 配置界面点击右上角 + 号，选择添加订阅链接',
+            { duration: 5000 }
+          )
         }
         return
-      } catch (_) {
+      } catch {
         // fall through
       }
     }
 
-    toast.error('复制失败(需要https)，请手动复制')
+    toast.error('复制失败，请手动复制链接')
   }
 
   return (
-    <div className='min-h-svh bg-background'>
-      <main className='mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 pt-24'>
+    <div className='bg-background min-h-svh'>
+      <main className='mx-auto w-full max-w-5xl px-4 py-8 pt-24 sm:px-6'>
         <section className='space-y-4 text-center sm:text-left'>
           <h1 className='text-3xl font-semibold tracking-tight'>订阅链接</h1>
-          <p className='mt-2 text-sm font-semibold text-destructive'>转换客户端代理是从substore抄过来的, 没有完全测试，有BUG请联系开发者</p>
+          <p className='text-destructive mt-2 text-sm font-semibold'>
+            转换客户端代理是从substore抄过来的, 没有完全测试，有BUG请联系开发者
+          </p>
         </section>
 
-        <section className='mt-8 grid gap-6 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3'>
+        <section
+          aria-busy={subscriptionsPending}
+          className='mt-8 grid gap-6 md:grid-cols-2 lg:grid-cols-3'
+        >
           {subscribeFiles.length === 0 ? (
-            <Card className='sm:col-span-1 md:col-span-2 lg:col-span-3 border-dashed shadow-none w-full'>
+            <Card className='w-full border-dashed shadow-none sm:col-span-1 md:col-span-2 lg:col-span-3'>
               <CardHeader>
-                <CardTitle>暂无可用订阅</CardTitle>
-                <CardDescription>管理员尚未为您分配订阅链接，请联系管理员进行分配。</CardDescription>
+                {subscriptionsPending ? (
+                  <CardTitle role='status'>正在加载订阅</CardTitle>
+                ) : subscriptionsError ? (
+                  <CardTitle role='alert'>订阅加载失败，请稍后再试。</CardTitle>
+                ) : (
+                  <>
+                    <CardTitle>暂无可用订阅</CardTitle>
+                    <CardDescription>
+                      管理员尚未为您分配订阅链接，请联系管理员进行分配。
+                    </CardDescription>
+                  </>
+                )}
               </CardHeader>
             </Card>
           ) : null}
 
           {subscribeFiles.map((file) => {
             const Icon = ICON_MAP[file.name] ?? QrCode
-            const subscribeURL = buildSubscriptionURL(file.filename, file.file_short_code, file.custom_short_code)
-            // 使用当前显示的URL，如果没有则使用默认URL
-            const displayURL = displayURLs[file.id] || subscribeURL
-            const clashURL = `clash://install-config?url=${encodeURIComponent(subscribeURL)}`
+            const selectedClient = file.raw_output
+              ? undefined
+              : CLIENT_TYPES.find(
+                  (client) => client.type === selectedFormats[file.id]
+                )
+            const subscribeURL = buildSubscriptionURL(file)
+            const displayURL = selectedClient
+              ? buildSubscriptionURL(file, selectedClient.type)
+              : subscribeURL
             const updatedLabel = file.updated_at
               ? dateFormatter.format(new Date(file.updated_at))
               : null
-            // All subscribe files show all buttons by default
-            const showQR = true
-            const showCopy = true
-            const showImport = true
+            const selectId = `subscription-format-${file.id}`
 
             return (
               <Card key={file.id} className='flex flex-col justify-between'>
                 <CardHeader>
                   <div className='flex items-start gap-3 overflow-hidden'>
-                    <button
-                      onClick={() => setQrValue(displayURL)}
-                      className='flex size-12 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary transition-all hover:bg-primary/20 hover:scale-110 active:scale-95 cursor-pointer'
-                      title='点击显示二维码'
-                    >
-                      <Icon className='size-6' />
-                    </button>
-                    <div className='flex-1 min-w-0 space-y-1 text-left'>
+                    <div className='bg-primary/10 text-primary flex size-12 shrink-0 items-center justify-center rounded-xl'>
+                      <Icon className='size-6' aria-hidden='true' />
+                    </div>
+                    <div className='min-w-0 flex-1 space-y-1 text-left'>
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <CardTitle className='text-lg truncate'>
+                          <CardTitle className='truncate text-lg'>
                             {file.name}
                           </CardTitle>
                         </TooltipTrigger>
                         <TooltipContent>{file.name}</TooltipContent>
                       </Tooltip>
-                      <CardDescription>{file.description || '—'}</CardDescription>
+                      <CardDescription>
+                        {file.description || '—'}
+                      </CardDescription>
                     </div>
                   </div>
                 </CardHeader>
                 <CardContent className='space-y-4'>
-                  <div className='flex items-center justify-end gap-2 flex-wrap'>
+                  <div className='flex flex-wrap items-center justify-end gap-2'>
                     {file.expire_at ? (
                       new Date(file.expire_at) < new Date() ? (
                         <Badge variant='destructive'>已过期</Badge>
@@ -282,12 +304,15 @@ function SubscriptionPage() {
                         </Badge>
                       )
                     ) : (
-                      <Badge variant='outline' className='text-muted-foreground'>
+                      <Badge
+                        variant='outline'
+                        className='text-muted-foreground'
+                      >
                         永久有效
                       </Badge>
                     )}
                     {updatedLabel ? (
-                      <p className='text-xs text-muted-foreground'>
+                      <p className='text-muted-foreground text-xs'>
                         {updatedLabel}
                       </p>
                     ) : null}
@@ -297,64 +322,85 @@ function SubscriptionPage() {
                       </Badge>
                     ) : null}
                   </div>
-                  <div className='break-all rounded-lg border bg-muted/40 p-3 font-mono text-xs shadow-inner sm:text-sm'>
-                    {displayURL}
-                  </div>
+                  {!file.raw_output ? (
+                    <div className='space-y-2'>
+                      <Label htmlFor={selectId}>客户端格式</Label>
+                      <Select
+                        value={selectedClient?.type ?? 'default'}
+                        onValueChange={(format) =>
+                          setSelectedFormats((prev) => ({
+                            ...prev,
+                            [file.id]: format,
+                          }))
+                        }
+                      >
+                        <SelectTrigger id={selectId}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value='default'>默认链接</SelectItem>
+                          {CLIENT_TYPES.map((client) => (
+                            <SelectItem key={client.type} value={client.type}>
+                              <img
+                                src={client.icon}
+                                alt=''
+                                className='size-4 shrink-0'
+                              />
+                              {client.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : null}
+                  <Input
+                    aria-label={`${file.name} 的订阅链接`}
+                    className='bg-muted/40 font-mono'
+                    value={displayURL ?? ''}
+                    placeholder={
+                      tokenError ? '获取订阅链接失败' : '正在准备订阅链接'
+                    }
+                    onFocus={(event) => event.currentTarget.select()}
+                    readOnly
+                  />
                   <div className='grid grid-cols-2 gap-2'>
-                    {file.raw_output ? (
+                    <Button
+                      size='sm'
+                      type='button'
+                      disabled={!displayURL}
+                      onClick={() =>
+                        displayURL &&
+                        void handleCopy(displayURL, selectedClient)
+                      }
+                    >
+                      <Copy aria-hidden='true' />
+                      复制链接
+                    </Button>
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      type='button'
+                      disabled={!displayURL}
+                      onClick={() => setQrValue(displayURL)}
+                    >
+                      <QrCode aria-hidden='true' />
+                      二维码
+                    </Button>
+                    {!file.raw_output && subscribeURL ? (
                       <Button
                         size='sm'
-                        className='w-full col-span-2 transition-transform hover:-translate-y-0.5 hover:shadow-md active:translate-y-0.5 active:scale-95'
-                        onClick={() => handleCopy(file.id, subscribeURL, '订阅链接')}
+                        variant='secondary'
+                        className='col-span-2'
+                        asChild
                       >
-                        <Copy className='mr-2 size-4' />
-                        复制订阅链接
+                        <a
+                          href={`clash://install-config?url=${encodeURIComponent(subscribeURL)}`}
+                        >
+                          <Download aria-hidden='true' />
+                          导入 Clash
+                        </a>
                       </Button>
-                    ) : (
-                      <>
-                        {showCopy ? (
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                size='sm'
-                                className='w-full transition-transform hover:-translate-y-0.5 hover:shadow-md active:translate-y-0.5 active:scale-95'
-                              >
-                                <Copy className='mr-2 size-4' />
-                                复制
-                                <ChevronDown className='ml-2 size-4' />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align='end' className='w-56'>
-                              {CLIENT_TYPES.map((client) => {
-                                const clientURL = buildSubscriptionURL(file.filename, file.file_short_code, file.custom_short_code, client.type)
-                                return (
-                                  <DropdownMenuItem
-                                    key={client.type}
-                                    onClick={() => handleCopy(file.id, clientURL, client.name, client.type)}
-                                    className='cursor-pointer'
-                                  >
-                                    <img src={client.icon} alt={client.name} className='mr-2 size-4' />
-                                    {client.name}
-                                  </DropdownMenuItem>
-                                )
-                              })}
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        ) : null}
-                        {showImport ? (
-                          <Button
-                            size='sm'
-                            variant='secondary'
-                            className='w-full transition-transform hover:-translate-y-0.5 hover:shadow-md active:translate-y-0.5 active:scale-95'
-                            asChild
-                          >
-                            <a href={clashURL}>
-                              <Download className='mr-2 size-4' />导入 Clash
-                            </a>
-                          </Button>
-                        ) : null}
-                      </>
-                    )}
+                    ) : null}
                   </div>
                 </CardContent>
               </Card>
@@ -374,14 +420,21 @@ function SubscriptionPage() {
         <DialogContent className='sm:max-w-sm'>
           <DialogHeader>
             <DialogTitle>订阅二维码</DialogTitle>
-            <DialogDescription>使用手机扫描二维码快速导入订阅链接。</DialogDescription>
+            <DialogDescription>
+              使用手机扫描二维码快速导入订阅链接。
+            </DialogDescription>
           </DialogHeader>
           {qrValue ? (
             <div className='flex flex-col items-center gap-4'>
               <div className='rounded-xl border bg-white p-4 shadow-inner'>
-                <QRCodeCanvas value={qrValue} size={220} level='M' includeMargin />
+                <QRCodeCanvas
+                  value={qrValue}
+                  size={220}
+                  level='M'
+                  includeMargin
+                />
               </div>
-              <div className='font-mono text-xs break-all text-center text-muted-foreground'>
+              <div className='text-muted-foreground text-center font-mono text-xs break-all'>
                 {qrValue}
               </div>
             </div>

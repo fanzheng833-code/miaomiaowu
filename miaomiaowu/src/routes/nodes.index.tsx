@@ -57,6 +57,7 @@ import {
   ArrowDown,
   ArrowUpDown,
   Gauge,
+  Search,
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { toast } from 'sonner'
@@ -743,6 +744,8 @@ function NodesPage() {
   const [tagFilter, setTagFilter] = useState<string>(
     () => getStoredFilterState().tag
   )
+  const [nodeSearch, setNodeSearch] = useState('')
+  const searchTerm = useDeferredValue(nodeSearch.trim().toLowerCase())
   const [editingNode, setEditingNode] = useState<{
     id: string
     value: string
@@ -3378,15 +3381,25 @@ function NodesPage() {
       )
     }
 
+    if (searchTerm) {
+      nodes = nodes.filter((node) => {
+        const server = node.parsed?.server || node.clash?.server || ''
+        return (
+          node.name.toLowerCase().includes(searchTerm) ||
+          String(server).toLowerCase().includes(searchTerm)
+        )
+      })
+    }
+
     return nodes
-  }, [listNodes, selectedProtocol, tagFilter])
+  }, [listNodes, selectedProtocol, tagFilter, searchTerm])
 
   const deferredFilteredNodes = useDeferredValue(filteredNodes)
 
   // 筛选变化时回到第 1 页
   useEffect(() => {
     setNodePage(1)
-  }, [selectedProtocol, tagFilter, displayNodes.length])
+  }, [selectedProtocol, tagFilter, searchTerm, displayNodes.length])
 
   const totalFilteredNodes = deferredFilteredNodes.length
   const totalNodePages = Math.max(
@@ -3416,7 +3429,7 @@ function NodesPage() {
   useEffect(() => {
     virtualListRef.current?.scrollTo?.({ top: 0 })
     tableVirtualListRef.current?.scrollTo?.({ top: 0 })
-  }, [nodePage, nodePageSize])
+  }, [nodePage, nodePageSize, searchTerm])
 
   // 虚拟列表 - 移动端卡片视图
   const mobileVirtualEnabled = renderMode === 'virtual' && !isTablet
@@ -4025,7 +4038,7 @@ vless://uuid@example.com:443?type=ws&security=tls&path=/websocket#VLESS节点
               <CardHeader>
                 <div className='flex flex-col gap-4 md:flex-row md:items-center md:justify-between'>
                   <div>
-                    <CardTitle>
+                    <CardTitle aria-live='polite'>
                       节点列表 ({deferredFilteredNodes.length})
                       {totalFilteredNodes > 0 && (
                         <span className='text-muted-foreground ml-2 text-sm font-normal'>
@@ -4303,6 +4316,43 @@ vless://uuid@example.com:443?type=ws&security=tls&path=/websocket#VLESS节点
               <CardContent className='space-y-4'>
                 {/* 协议筛选按钮 */}
                 <div className='space-y-3'>
+                  <div className='flex flex-wrap items-end gap-2'>
+                    <div className='min-w-40 flex-1 space-y-2 sm:max-w-sm'>
+                      <Label htmlFor='node-list-search'>搜索节点</Label>
+                      <div className='relative'>
+                        <Search
+                          aria-hidden='true'
+                          className='text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2'
+                        />
+                        <Input
+                          id='node-list-search'
+                          type='search'
+                          autoComplete='off'
+                          className='pl-9'
+                          placeholder='节点名称或服务器地址'
+                          value={nodeSearch}
+                          onChange={(event) => setNodeSearch(event.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      disabled={
+                        !nodeSearch &&
+                        selectedProtocol === 'all' &&
+                        tagFilter === 'all'
+                      }
+                      onClick={() => {
+                        setNodeSearch('')
+                        setSelectedProtocol('all')
+                        setTagFilter('all')
+                      }}
+                    >
+                      重置筛选
+                    </Button>
+                  </div>
                   <div>
                     <div className='mb-2 text-sm font-medium'>按协议筛选</div>
                     <div className='flex flex-wrap gap-2'>
