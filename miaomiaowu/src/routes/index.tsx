@@ -1,7 +1,15 @@
-// @ts-nocheck
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute, redirect } from '@tanstack/react-router'
+import {
+  Activity,
+  AlertCircle,
+  ChartNoAxesCombined,
+  HardDrive,
+  PieChart,
+  RefreshCw,
+  TrendingUp,
+} from 'lucide-react'
 import {
   Area,
   AreaChart,
@@ -11,24 +19,43 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { Activity, HardDrive, PieChart, TrendingUp } from 'lucide-react'
-import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
+import { api } from '@/lib/api'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 
-// @ts-ignore - retained simple route definition
+interface DailyUsage {
+  date: string
+  used_gb: number
+}
+
+interface TrafficSummary {
+  metrics: {
+    total_limit_gb: number
+    total_used_gb: number
+    total_remaining_gb: number
+    usage_percentage: number
+  }
+  history: DailyUsage[] | null
+}
+
+const numberFormatter = new Intl.NumberFormat('zh-CN', {
+  maximumFractionDigits: 2,
+})
+const timeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+})
+const ranges = [7, 30] as const
+
 export const Route = createFileRoute('/')({
   beforeLoad: () => {
-    const token = useAuthStore.getState().auth.accessToken
-    if (!token) {
+    if (!useAuthStore.getState().auth.accessToken) {
       throw redirect({ to: '/login' })
     }
   },
@@ -36,205 +63,308 @@ export const Route = createFileRoute('/')({
 })
 
 function DashboardPage() {
-  const { auth } = useAuthStore()
-
-  const numberFormatter = useMemo(
-    () =>
-      new Intl.NumberFormat('zh-CN', {
-        maximumFractionDigits: 2,
-        minimumFractionDigits: 0,
-      }),
-    []
-  )
-
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ['traffic-summary'],
-    queryFn: async () => {
-      const response = await api.get('/api/traffic/summary')
-      return response.data
-    },
-    staleTime: 5 * 60 * 1000,
-    refetchInterval: 5 * 60 * 1000,
-    enabled: Boolean(auth.accessToken),
-  })
-
-  const metrics = useMemo(() => data?.metrics ?? {}, [data?.metrics])
-
-  const cards = useMemo(
-    () => [
-      {
-        title: '总流量配额',
-        description: '全部服务器的可用总配额',
-        value: formatMetric(metrics.total_limit_gb, numberFormatter),
-        icon: TrendingUp,
+  const accessToken = useAuthStore((state) => state.auth.accessToken)
+  const [range, setRange] = useState<(typeof ranges)[number]>(30)
+  const { data, dataUpdatedAt, isError, isFetching, isLoading, refetch } =
+    useQuery({
+      queryKey: ['traffic-summary'],
+      queryFn: async ({ signal }) => {
+        const response = await api.get<TrafficSummary>('/api/traffic/summary', {
+          signal,
+        })
+        return response.data
       },
-      {
-        title: '已用流量',
-        description: '截止今日的累计消耗',
-        value: formatMetric(metrics.total_used_gb, numberFormatter),
-        icon: Activity,
-      },
-      {
-        title: '剩余流量',
-        description: '仍可分配的余量',
-        value: formatMetric(metrics.total_remaining_gb, numberFormatter),
-        icon: HardDrive,
-      },
-      {
-        title: '使用率',
-        description: '累计使用占比',
-        value: formatPercentage(metrics.usage_percentage, numberFormatter),
-        progress: Number(metrics.usage_percentage ?? 0),
-        icon: PieChart,
-      },
-    ],
-    [metrics, numberFormatter]
-  )
+      staleTime: 5 * 60 * 1000,
+      refetchInterval: 5 * 60 * 1000,
+      enabled: Boolean(accessToken),
+    })
 
+  const history = data?.history
   const chartData = useMemo(() => {
-    return (data?.history ?? []).map((item: any) => ({
-      date: item.date,
-      label: item.date.slice(5),
-      used: Number(item.used_gb ?? 0),
-    }))
-  }, [data])
+    if (!history?.length) return []
 
-  const hasHistory = chartData.length > 0
+    // The API returns dates in ascending order. Use calendar days so missing
+    // records don't extend the selected range.
+    const latest = history[history.length - 1].date
+    const cutoff = new Date(latest)
+    cutoff.setUTCDate(cutoff.getUTCDate() - range + 1)
+    const oldest = cutoff.toISOString().slice(0, 10)
+    return history.filter((entry) => entry.date >= oldest)
+  }, [history, range])
+
+  const metrics = data?.metrics
+  const cards = [
+    {
+      label: '总流量配额',
+      value: formatTraffic(metrics?.total_limit_gb),
+      icon: TrendingUp,
+    },
+    {
+      label: '已用流量',
+      value: formatTraffic(metrics?.total_used_gb),
+      icon: Activity,
+    },
+    {
+      label: '剩余流量',
+      value: formatTraffic(metrics?.total_remaining_gb),
+      icon: HardDrive,
+    },
+    {
+      label: '使用率',
+      value:
+        metrics && Number.isFinite(metrics.usage_percentage)
+          ? `${numberFormatter.format(metrics.usage_percentage)}%`
+          : '—',
+      progress: metrics?.usage_percentage,
+      icon: PieChart,
+    },
+  ]
 
   return (
-    <div className='min-h-svh bg-background'>
-      <main className='mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 pt-24'>
+    <main
+      aria-labelledby='traffic-heading'
+      className='mx-auto w-full max-w-6xl space-y-5 px-4 pt-24 pb-10 sm:space-y-6 sm:px-6'
+    >
+      <header className='flex flex-wrap items-center justify-between gap-x-4 gap-y-3'>
+        <h1
+          id='traffic-heading'
+          className='text-2xl font-semibold tracking-tight sm:text-3xl'
+        >
+          流量概览
+        </h1>
+        <div className='flex flex-wrap items-center gap-x-3 gap-y-2'>
+          {dataUpdatedAt > 0 && (
+            <p className='text-muted-foreground text-xs' aria-live='polite'>
+              最近更新{' '}
+              <time dateTime={new Date(dataUpdatedAt).toISOString()}>
+                {timeFormatter.format(dataUpdatedAt)}
+              </time>
+            </p>
+          )}
+          <Button
+            variant='outline'
+            size='sm'
+            type='button'
+            onClick={() => void refetch()}
+            disabled={isFetching}
+          >
+            <RefreshCw
+              aria-hidden='true'
+              className={isFetching ? 'motion-safe:animate-spin' : undefined}
+            />
+            {isFetching ? '刷新中' : '刷新'}
+          </Button>
+        </div>
+      </header>
 
-        <section className=' grid gap-4 sm:grid-cols-2 lg:grid-cols-4'>
-          {isLoading
-            ? Array.from({ length: 4 }).map((_, index) => (
-                <Card key={index}>
-                  <CardHeader className='space-y-2'>
-                    <CardTitle className='flex flex-row items-center justify-between text-base'>
-                      <Skeleton className='h-5 w-24' />
-                      <Skeleton className='h-10 w-10 rounded-full' />
-                    </CardTitle>
-                    <CardDescription>
-                      <Skeleton className='h-4 w-32' />
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <Skeleton className='h-9 w-28' />
-                  </CardContent>
-                </Card>
-              ))
-            : cards.map(({ title, description, value, icon: Icon, progress }) => (
-                <Card key={title}>
-                  <CardHeader className='space-y-2'>
-                    <CardTitle className='flex flex-row items-center justify-between text-base'>
-                      {title}
-                      <Icon className='size-8 text-primary' />
-                    </CardTitle>
-                    <CardDescription>{description}</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className='text-3xl font-semibold'>{value}</div>
-                    {typeof progress === 'number' && !Number.isNaN(progress) ? (
-                      <div className='mt-4 space-y-2'>
-                        <Progress value={Math.min(Math.max(progress, 0), 100)} max={100} />
-                        <div className='text-xs text-muted-foreground'>
-                          已使用 {numberFormatter.format(progress)}%
-                        </div>
-                      </div>
-                    ) : null}
-                  </CardContent>
-                </Card>
-              ))}
-        </section>
-
-        <Card className='mt-8'>
-          <CardHeader>
-            <CardTitle>每日流量消耗</CardTitle>
-            <CardDescription>最近记录的日度流量趋势</CardDescription>
-          </CardHeader>
-          <CardContent className='pt-0'>
-            <div className='h-80'>
-              {isLoading ? (
-                <div className='flex h-full items-center justify-center'>
-                  <Skeleton className='h-32 w-full max-w-3xl' />
-                </div>
-              ) : !hasHistory ? (
-                <div className='flex h-full items-center justify-center text-sm text-muted-foreground'>
-                  {isError ? '数据加载失败，请稍后重试。' : '暂无历史记录。'}
-                </div>
-              ) : (
-                <ResponsiveContainer width='100%' height='100%'>
-                  <AreaChart data={chartData} margin={{ left: 16, right: 16, top: 24, bottom: 8 }}>
-                    <defs>
-                      <linearGradient id='dailyUsageGradient' x1='0' y1='0' x2='0' y2='1'>
-                        <stop offset='0%' stopColor='#d97757' stopOpacity={0.7} />
-                        <stop offset='100%' stopColor='#d97757' stopOpacity={0.2} />
-                      </linearGradient>
-                      <filter id='shadow' x='-50%' y='-50%' width='200%' height='200%'>
-                        <feDropShadow dx='0' dy='2' stdDeviation='3' floodColor='#d97757' floodOpacity='0.3'/>
-                      </filter>
-                    </defs>
-                    <XAxis
-                      dataKey='label'
-                      tickLine={false}
-                      axisLine={false}
-                      splitLine={false}
-                      className='fill-foreground'
-                      stroke='#a1a1aa'
-                    />
-                    <YAxis
-                      tickLine={false}
-                      axisLine={false}
-                      splitLine={false}
-                      tickFormatter={(value: number) => `${numberFormatter.format(value)}`}
-                      className='fill-foreground'
-                      stroke='#a1a1aa'
-                    />
-                    <Tooltip
-                      cursor={{ stroke: '#d97757', strokeWidth: 2 }}
-                      labelFormatter={(label: string) => `日期：${chartData.find((item) => item.label === label)?.date ?? label}`}
-                      formatter={(value: number) => [`${numberFormatter.format(value)} GB`, '日消耗']}
-                      contentStyle={{
-                        backgroundColor: 'hsl(var(--popover))',
-                        border: '1px solid hsl(var(--border))',
-                        borderRadius: 'var(--radius)',
-                      }}
-                      labelStyle={{ color: 'hsl(var(--foreground))' }}
-                    />
-                    <Area
-                      type='monotone'
-                      dataKey='used'
-                      stroke='#d97757'
-                      fill='url(#dailyUsageGradient)'
-                      strokeWidth={3}
-                      name='日消耗'
-                      filter='url(#shadow)'
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              )}
-            </div>
+      {isError && !data ? (
+        <Card>
+          <CardContent className='flex flex-col items-center gap-3 py-12 text-center'>
+            <AlertCircle
+              className='text-destructive size-7'
+              aria-hidden='true'
+            />
+            <p role='alert' className='font-medium'>
+              流量数据加载失败
+            </p>
+            <Button
+              type='button'
+              size='sm'
+              onClick={() => void refetch()}
+              disabled={isFetching}
+            >
+              重试
+            </Button>
           </CardContent>
         </Card>
-      </main>
-    </div>
+      ) : (
+        <>
+          {isError && (
+            <p
+              role='status'
+              className='border-border bg-card text-muted-foreground border px-3 py-2 text-sm'
+            >
+              更新失败，当前显示上次获取的数据。
+            </p>
+          )}
+
+          <section
+            aria-label='流量指标'
+            aria-busy={isLoading}
+            className='grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4'
+          >
+            {isLoading
+              ? cards.map(({ label }) => (
+                  <Card key={label} aria-hidden='true'>
+                    <CardContent className='space-y-4 px-3.5 py-3 sm:px-5'>
+                      <Skeleton className='h-5 w-3/4' />
+                      <Skeleton className='h-7 w-2/3' />
+                    </CardContent>
+                  </Card>
+                ))
+              : cards.map(({ label, value, icon: Icon, progress }) => (
+                  <Card key={label} className='min-w-0'>
+                    <CardContent className='px-3.5 py-3 sm:px-5'>
+                      <div className='mb-2.5 flex items-center justify-between gap-2'>
+                        <h2 className='text-muted-foreground text-xs font-medium sm:text-sm'>
+                          {label}
+                        </h2>
+                        <span className='bg-primary/10 text-primary grid size-8 shrink-0 place-items-center rounded-md'>
+                          <Icon className='size-4' aria-hidden='true' />
+                        </span>
+                      </div>
+                      <div className='text-xl font-semibold tracking-tight [overflow-wrap:anywhere] tabular-nums sm:text-2xl'>
+                        {value}
+                      </div>
+                      {typeof progress === 'number' &&
+                        Number.isFinite(progress) && (
+                          <Progress
+                            aria-label='流量使用率'
+                            aria-valuetext={value}
+                            className='mt-3 h-1.5'
+                            value={progress}
+                          />
+                        )}
+                    </CardContent>
+                  </Card>
+                ))}
+          </section>
+
+          <Card className='min-w-0'>
+            <CardContent className='px-3 py-3 sm:px-6 sm:py-4'>
+              <div className='mb-4 flex flex-wrap items-center justify-between gap-3'>
+                <div className='space-y-1'>
+                  <h2 className='font-semibold'>每日流量消耗</h2>
+                  <p className='text-muted-foreground text-xs'>单位 GB</p>
+                </div>
+                <div
+                  role='group'
+                  aria-label='趋势时间范围'
+                  className='bg-muted/70 flex gap-1 rounded-lg p-1'
+                >
+                  {ranges.map((days) => (
+                    <Button
+                      key={days}
+                      type='button'
+                      variant={days === range ? 'outline' : 'ghost'}
+                      size='sm'
+                      className='h-8 rounded-md px-2.5 text-xs'
+                      aria-pressed={days === range}
+                      onClick={() => setRange(days)}
+                    >
+                      最近 {days} 天
+                    </Button>
+                  ))}
+                </div>
+              </div>
+              <div className='h-60 min-w-0 sm:h-80'>
+                {isLoading ? (
+                  <Skeleton
+                    className='size-full'
+                    aria-label='正在加载流量趋势'
+                  />
+                ) : chartData.length === 0 ? (
+                  <div className='text-muted-foreground flex h-full flex-col items-center justify-center gap-2 text-center text-sm'>
+                    <ChartNoAxesCombined
+                      className='size-7'
+                      aria-hidden='true'
+                    />
+                    暂无历史记录
+                  </div>
+                ) : (
+                  <ResponsiveContainer width='100%' height='100%'>
+                    <AreaChart
+                      accessibilityLayer
+                      data={chartData}
+                      margin={{ left: 0, right: 12, top: 12, bottom: 0 }}
+                    >
+                      <defs>
+                        <linearGradient
+                          id='daily-usage-fill'
+                          x1='0'
+                          y1='0'
+                          x2='0'
+                          y2='1'
+                        >
+                          <stop
+                            offset='0%'
+                            stopColor='var(--chart-1)'
+                            stopOpacity={0.34}
+                          />
+                          <stop
+                            offset='100%'
+                            stopColor='var(--chart-1)'
+                            stopOpacity={0.04}
+                          />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid
+                        vertical={false}
+                        stroke='var(--border)'
+                        strokeDasharray='4 4'
+                      />
+                      <XAxis
+                        dataKey='date'
+                        tickLine={false}
+                        axisLine={false}
+                        minTickGap={20}
+                        tickMargin={8}
+                        tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }}
+                        tickFormatter={(date: string) =>
+                          date.slice(5).replace('-', '/')
+                        }
+                      />
+                      <YAxis
+                        width={44}
+                        tickCount={5}
+                        tickLine={false}
+                        axisLine={false}
+                        tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }}
+                        tickFormatter={(value: number) =>
+                          numberFormatter.format(value)
+                        }
+                      />
+                      <Tooltip
+                        formatter={(usage) =>
+                          typeof usage === 'number'
+                            ? `${numberFormatter.format(usage)} GB`
+                            : '—'
+                        }
+                        cursor={{ stroke: 'var(--chart-1)' }}
+                        contentStyle={{
+                          backgroundColor: 'var(--popover)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 'var(--radius)',
+                          color: 'var(--popover-foreground)',
+                        }}
+                        itemStyle={{ color: 'var(--popover-foreground)' }}
+                      />
+                      <Area
+                        type='monotone'
+                        dataKey='used_gb'
+                        name='日消耗'
+                        stroke='var(--chart-1)'
+                        fill='url(#daily-usage-fill)'
+                        strokeWidth={2}
+                        dot={chartData.length === 1}
+                        isAnimationActive={false}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
+    </main>
   )
 }
 
-function formatMetric(value: number | undefined, formatter: Intl.NumberFormat) {
-  if (value === undefined || value === null) return '--'
-  let unit = 'GB'
-  let displayValue = value
-
-  if (value >= 1024) {
-    displayValue = value / 1024
-    unit = 'TB'
+function formatTraffic(value?: number) {
+  if (value === undefined || !Number.isFinite(value)) return '—'
+  if (Math.abs(value) >= 1024) {
+    return `${numberFormatter.format(value / 1024)} TB`
   }
-
-  return `${formatter.format(displayValue)} ${unit}`
-}
-
-function formatPercentage(value: number | undefined, formatter: Intl.NumberFormat) {
-  if (value === undefined || value === null) return '--'
-  return `${formatter.format(value)} %`
+  return `${numberFormatter.format(value)} GB`
 }

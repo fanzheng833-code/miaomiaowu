@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
-import { Menu } from 'lucide-react'
+import { Link, useRouterState } from '@tanstack/react-router'
+import { Check, Menu } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth-store'
 import {
   adminNavLinks,
@@ -15,6 +15,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { NavIcon } from '@/components/layout/nav-icon'
@@ -23,7 +24,8 @@ import { UserMenu } from './user-menu'
 
 export function Topbar() {
   const { auth } = useAuthStore()
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const pathname = useRouterState({ select: (state) => state.location.pathname })
+  const [compactMenuOpen, setCompactMenuOpen] = useState(false)
   const navRef = useRef<HTMLElement>(null)
   const [iconOnlyCount, setIconOnlyCount] = useState(0)
   const [hideLogoText, setHideLogoText] = useState(false)
@@ -50,9 +52,9 @@ export function Topbar() {
     isAdmin ? [...baseNavLinks, ...adminNavLinks] : baseNavLinks,
     navMenu
   )
-  // 移动端:基础菜单直接摆在顶栏,管理菜单收进下拉。同一份配置也套上去,免得两处顺序不一致。
-  const mobileBaseLinks = applyNavMenuConfig(baseNavLinks, navMenu)
-  const mobileAdminLinks = applyNavMenuConfig(adminNavLinks, navMenu)
+  const currentPage = allNavLinks.find(
+    ({ to }) => to === pathname || (to !== '/' && pathname.startsWith(`${to}/`))
+  )
   const totalLinks = allNavLinks.length
 
   // 计算需要隐藏文字的按钮数量（从后往前）
@@ -100,15 +102,9 @@ export function Topbar() {
   }, [totalLinks])
 
   useEffect(() => {
-    calculateIconOnlyCount()
-
-    const resizeObserver = new ResizeObserver(() => {
-      calculateIconOnlyCount()
-    })
-
-    if (navRef.current?.parentElement?.parentElement) {
-      resizeObserver.observe(navRef.current.parentElement.parentElement)
-    }
+    const header = navRef.current?.closest('header')
+    const resizeObserver = new ResizeObserver(calculateIconOnlyCount)
+    if (header) resizeObserver.observe(header)
 
     window.addEventListener('resize', calculateIconOnlyCount)
 
@@ -118,24 +114,34 @@ export function Topbar() {
     }
   }, [calculateIconOnlyCount])
 
+  useEffect(() => {
+    const desktop = window.matchMedia('(min-width: 64rem)')
+    const closeCompactMenu = () => {
+      if (desktop.matches) setCompactMenuOpen(false)
+    }
+    desktop.addEventListener('change', closeCompactMenu)
+    return () => desktop.removeEventListener('change', closeCompactMenu)
+  }, [])
+
   return (
     <header className='bg-background/80 supports-[backdrop-filter]:bg-background/60 fixed top-0 right-0 left-0 z-50 border-b border-[color:rgba(241,140,110,0.22)] backdrop-blur'>
-      <div className='flex h-16 items-center justify-between overflow-hidden px-4 sm:px-6'>
+      <div className='flex h-16 items-center justify-between gap-2 px-4 sm:px-6'>
         <div className='flex min-w-0 items-center gap-4 sm:gap-6'>
           <Link
             to='/'
-            className='hover:text-primary flex shrink-0 items-center gap-3 text-lg font-semibold tracking-tight transition outline-none focus:outline-none'
+            aria-label='妙妙屋首页'
+            className='hover:text-primary focus-visible:outline-ring flex shrink-0 items-center gap-3 text-lg font-semibold tracking-tight transition focus-visible:outline-2 focus-visible:outline-offset-4'
           >
             <img
               src={`${import.meta.env.BASE_URL}images/logo.webp`}
-              alt='妙妙屋 Logo'
+              alt=''
               className='h-10 w-10 shrink-0 border-2 border-[color:rgba(241,140,110,0.4)] shadow-[4px_4px_0_rgba(0,0,0,0.2)]'
             />
-            {!hideLogoText && (
-              <span className='pixel-text text-primary hidden text-base whitespace-nowrap md:inline'>
-                妙妙屋
-              </span>
-            )}
+            <span
+              className={`pixel-text text-primary hidden text-base whitespace-nowrap min-[25rem]:inline ${hideLogoText ? 'lg:hidden' : ''}`}
+            >
+              妙妙屋
+            </span>
           </Link>
 
           {/* Desktop Navigation - Base links + Admin links */}
@@ -144,8 +150,9 @@ export function Topbar() {
               data-status="active" 标出。非 glass 主题下这些属性完全无副作用。 */}
           <nav
             ref={navRef}
+            aria-label='主导航'
             data-glass-nav
-            className='hidden items-center gap-2 md:flex md:gap-3'
+            className='hidden items-center gap-3 lg:flex'
           >
             {allNavLinks.map(({ title, to, icon: Icon }, index) => {
               // 从后往前计算，index >= totalLinks - iconOnlyCount 的按钮只显示图标
@@ -158,7 +165,8 @@ export function Topbar() {
                   data-nav-item
                   aria-label={title}
                   title={title}
-                  className={`pixel-button bg-background/75 text-foreground hover:bg-accent/35 hover:text-accent-foreground dark:bg-input/30 dark:hover:bg-accent/45 dark:hover:text-accent-foreground inline-flex h-9 items-center gap-2 border-[color:rgba(137,110,96,0.45)] py-2 text-sm font-semibold tracking-widest whitespace-nowrap uppercase transition-all dark:border-[color:rgba(255,255,255,0.18)] ${
+                  activeOptions={{ exact: to === '/', includeSearch: false }}
+                  className={`pixel-button bg-background/75 text-foreground hover:bg-accent/35 hover:text-accent-foreground focus-visible:outline-ring dark:bg-input/30 dark:hover:bg-accent/45 dark:hover:text-accent-foreground inline-flex h-9 items-center gap-2 border-[color:rgba(137,110,96,0.45)] py-2 text-sm font-semibold tracking-widest whitespace-nowrap uppercase transition-all focus-visible:outline-2 focus-visible:outline-offset-2 dark:border-[color:rgba(255,255,255,0.18)] ${
                     showIconOnly
                       ? 'w-9 justify-center px-2'
                       : 'justify-start px-3'
@@ -178,78 +186,62 @@ export function Topbar() {
               )
             })}
           </nav>
+        </div>
 
-          {/* Mobile Base Navigation - Only show on mobile */}
-          <nav className='flex items-center gap-2 md:hidden'>
-            {mobileBaseLinks.map(({ title, to, icon: Icon }) => (
-              <Link
-                key={to}
-                to={to}
-                aria-label={title}
-                className='pixel-button bg-background/75 text-foreground hover:bg-accent/35 hover:text-accent-foreground dark:bg-input/30 dark:hover:bg-accent/45 dark:hover:text-accent-foreground inline-flex h-9 items-center justify-center gap-2 border-[color:rgba(137,110,96,0.45)] px-2 py-2 text-sm font-semibold tracking-widest uppercase transition-all dark:border-[color:rgba(255,255,255,0.18)]'
-                activeProps={{
-                  className:
-                    'bg-primary/20 text-primary border-[color:rgba(217,119,87,0.55)] dark:bg-primary/20 dark:border-[color:rgba(217,119,87,0.55)]',
-                }}
-              >
-                <NavIcon icon={Icon} to={to} className='size-[18px] shrink-0' />
-              </Link>
-            ))}
-          </nav>
-
-          {/* Mobile Navigation Dropdown - Only show on mobile for admin */}
-          {isAdmin && (
+        <div className='flex min-w-0 items-center gap-2 sm:gap-3'>
+          {totalLinks > 0 && (
             <DropdownMenu
-              open={mobileMenuOpen}
-              onOpenChange={setMobileMenuOpen}
+              open={compactMenuOpen}
+              onOpenChange={setCompactMenuOpen}
             >
               <DropdownMenuTrigger asChild>
                 <Button
                   variant='outline'
-                  size='icon'
-                  className='pixel-button bg-background/75 hover:bg-accent/35 dark:bg-input/30 dark:hover:bg-accent/45 h-9 w-9 border-[color:rgba(137,110,96,0.45)] md:hidden dark:border-[color:rgba(255,255,255,0.18)]'
+                  aria-label={
+                    currentPage
+                      ? `打开页面导航，当前页面：${currentPage.title}`
+                      : '打开页面导航'
+                  }
+                  className='h-11 min-w-0 shrink px-2 has-[>svg]:px-2 lg:hidden'
                 >
-                  <Menu className='h-5 w-5' />
-                  <span className='sr-only'>打开菜单</span>
+                  <Menu className='size-4 shrink-0' aria-hidden='true' />
+                  <span className='truncate'>{currentPage?.title ?? '页面导航'}</span>
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align='start' className='pixel-border w-48'>
-                {mobileAdminLinks.map(({ title, to, icon: Icon }) => (
+              <DropdownMenuContent
+                align='end'
+                collisionPadding={12}
+                className='nav-overflow-menu pixel-border w-56'
+              >
+                <DropdownMenuLabel className='text-muted-foreground'>
+                  页面导航
+                </DropdownMenuLabel>
+                {allNavLinks.map(({ title, to, icon: Icon }) => (
                   <DropdownMenuItem key={to} asChild>
                     <Link
                       to={to}
-                      className='hover:bg-accent/35 focus:bg-accent/35 flex cursor-pointer items-center gap-3 px-3 py-2'
-                      onClick={() => setMobileMenuOpen(false)}
+                      activeOptions={{ exact: to === '/', includeSearch: false }}
+                      className='group hover:bg-accent/35 focus:bg-accent/35 flex min-h-11 cursor-pointer items-center gap-3 px-3 py-2'
+                      activeProps={{
+                        className: 'bg-primary/15 text-primary font-semibold',
+                      }}
                     >
                       <NavIcon
                         icon={Icon}
                         to={to}
                         className='size-[18px] shrink-0'
                       />
-                      <span>{title}</span>
+                      <span className='flex-1'>{title}</span>
+                      <Check
+                        className='text-primary hidden size-4 group-data-[status=active]:block'
+                        aria-hidden='true'
+                      />
                     </Link>
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-        </div>
-
-        <div className='flex items-center gap-2 pl-2 sm:gap-3 sm:pl-0'>
-          {/* <a
-            href='https://t.me/miaomiaowux'
-            target='_blank'
-            rel='noopener noreferrer'
-            aria-label='Telegram 交流群组'
-            title='Telegram 交流群组'
-            className='pixel-button inline-flex items-center justify-center h-9 w-9 px-2 py-2 text-sm font-semibold bg-background/75 text-foreground border-[color:rgba(137,110,96,0.45)] hover:bg-accent/35 hover:text-accent-foreground dark:bg-input/30 dark:border-[color:rgba(255,255,255,0.18)] dark:hover:bg-accent/45 dark:hover:text-accent-foreground transition-all relative animate-pulse'
-          >
-            <Send className='size-[18px] animate-bounce' />
-            <span className='absolute -top-1 -right-1 flex h-3 w-3'>
-              <span className='animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75'></span>
-              <span className='relative inline-flex rounded-full h-3 w-3 bg-primary'></span>
-            </span>
-          </a> */}
           <ThemeSwitch />
           <UserMenu />
         </div>

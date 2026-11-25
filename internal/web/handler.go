@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,9 @@ const (
 	glassTonePlaceholder          = "__MMW_GLASS_TONE__"
 	reduceTransparencyPlaceholder = "__MMW_REDUCE_TRANSPARENCY__"
 )
+
+// Vite emits content-hashed files here. Public files and source maps do not use this cache policy.
+var fingerprintedAsset = regexp.MustCompile(`^assets/[^/]+-[A-Za-z0-9_-]{8}\.(js|css|png|svg|webp|woff2?)$`)
 
 var (
 	initOnce    sync.Once
@@ -132,6 +136,9 @@ func Handler() http.Handler {
 		}
 
 		if fileExists(resource) {
+			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && fingerprintedAsset.MatchString(resource) {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			}
 			staticFiles.ServeHTTP(w, r)
 			return
 		}
