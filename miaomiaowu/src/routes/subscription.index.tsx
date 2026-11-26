@@ -27,6 +27,7 @@ import uriIcon from '@/assets/icons/uri-color.svg'
 import v2rayIcon from '@/assets/icons/v2ray_color.png'
 import { useAuthStore } from '@/stores/auth-store'
 import { api } from '@/lib/api'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -201,25 +202,20 @@ function SubscriptionPage() {
     urlText: string,
     client?: (typeof CLIENT_TYPES)[number]
   ) => {
-    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-      try {
-        await navigator.clipboard.writeText(urlText)
-        toast.success(
-          client ? `${client.name} 订阅链接已复制` : '订阅链接已复制'
-        )
-        if (client?.type === 'clash-to-shadowrocket') {
-          toast.info(
-            '请在 Shadowrocket 配置界面点击右上角 + 号，选择添加订阅链接',
-            { duration: 5000 }
-          )
-        }
-        return
-      } catch {
-        // fall through
-      }
+    if (!(await copyTextToClipboard(urlText))) {
+      toast.error('复制失败，请手动复制链接')
+      return
     }
 
-    toast.error('复制失败，请手动复制链接')
+    toast.success(client ? `${client.name} 订阅链接已复制` : '订阅链接已复制')
+    if (client?.type === 'clash-to-shadowrocket') {
+      toast.info(
+        '请在 Shadowrocket 配置界面点击右上角 + 号，选择添加订阅链接',
+        {
+          duration: 5000,
+        }
+      )
+    }
   }
 
   return (

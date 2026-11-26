@@ -22,6 +22,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { profileQueryFn } from '@/lib/profile'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -352,14 +353,16 @@ function RuleProvidersPage() {
                     variant='ghost'
                     size='icon'
                     title='复制订阅里要填的地址'
-                    onClick={() => {
-                      navigator.clipboard
-                        .writeText(publicURL(p.name))
-                        .then(() => toast.success('地址已复制'))
-                        .catch(() => toast.error('复制失败'))
+                    aria-label='复制规则集地址'
+                    onClick={async () => {
+                      if (await copyTextToClipboard(publicURL(p.name))) {
+                        toast.success('地址已复制')
+                      } else {
+                        toast.error('复制失败，请手动复制地址')
+                      }
                     }}
                   >
-                    <Copy className='size-4' />
+                    <Copy className='size-4' aria-hidden='true' />
                   </Button>
                   {p.source === 'remote' && (
                     <Button

@@ -67,6 +67,7 @@ import ExchangeIcon from '@/assets/icons/exchange.svg'
 import IpIcon from '@/assets/icons/ip.svg'
 import { useAuthStore } from '@/stores/auth-store'
 import { api } from '@/lib/api'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import {
   countryCodeToFlag,
   hasRegionEmoji,
@@ -1557,11 +1558,9 @@ function NodesPage() {
       const producer = URI_Producer()
       const uri = producer.produce(clashConfig)
 
-      // 尝试复制到剪贴板
-      try {
-        await navigator.clipboard.writeText(uri)
+      if (await copyTextToClipboard(uri)) {
         toast.success('URI 已复制到剪贴板')
-      } catch (clipboardError) {
+      } else {
         // 复制失败，显示手动复制对话框
         setUriContent(uri)
         setUriDialogOpen(true)
@@ -8900,16 +8899,13 @@ vless://uuid@example.com:443?type=ws&security=tls&path=/websocket#VLESS节点
                 关闭
               </Button>
               <Button
-                onClick={() => {
-                  navigator.clipboard
-                    .writeText(uriContent)
-                    .then(() => {
-                      toast.success('URI 已复制到剪贴板')
-                      setUriDialogOpen(false)
-                    })
-                    .catch(() => {
-                      toast.error('复制失败，请手动选择文本复制')
-                    })
+                onClick={async () => {
+                  if (await copyTextToClipboard(uriContent)) {
+                    toast.success('URI 已复制到剪贴板')
+                    setUriDialogOpen(false)
+                  } else {
+                    toast.error('复制失败，请手动选择文本复制')
+                  }
                 }}
               >
                 再试一次
@@ -9914,15 +9910,14 @@ vless://uuid@example.com:443?type=ws&security=tls&path=/websocket#VLESS节点
                     variant='outline'
                     size='icon'
                     onClick={async () => {
-                      try {
-                        await navigator.clipboard.writeText(tempSubUrl)
-                        toast.success('链接已复制')
-                        setTempSubDialogOpen(false)
-                        setTempSubUrl('')
-                        setTempSubSingleNodeId(null)
-                      } catch {
+                      if (!(await copyTextToClipboard(tempSubUrl))) {
                         toast.error('复制失败，请手动复制')
+                        return
                       }
+                      toast.success('链接已复制')
+                      setTempSubDialogOpen(false)
+                      setTempSubUrl('')
+                      setTempSubSingleNodeId(null)
                     }}
                   >
                     <Copy className='h-4 w-4' />

@@ -2380,8 +2380,8 @@ ON CONFLICT(date) DO UPDATE SET
 	return nil
 }
 
-// ListRecent returns up to the requested number of most recent traffic records, ordered from newest to oldest.
-func (r *TrafficRepository) ListRecent(ctx context.Context, limit int) ([]TrafficRecord, error) {
+// ListRecentThrough returns the most recent traffic records through the given UTC day, newest first.
+func (r *TrafficRepository) ListRecentThrough(ctx context.Context, through time.Time, limit int) ([]TrafficRecord, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("traffic repository not initialized")
 	}
@@ -2393,9 +2393,10 @@ func (r *TrafficRepository) ListRecent(ctx context.Context, limit int) ([]Traffi
 	rows, err := r.db.QueryContext(ctx, `
 SELECT date, total_limit, total_used, total_remaining
 FROM traffic_records
+WHERE date <= ?
 ORDER BY date DESC
 LIMIT ?;
-`, limit)
+`, through.UTC().Format(time.DateOnly), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list recent traffic records: %w", err)
 	}

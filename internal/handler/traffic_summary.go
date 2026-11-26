@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"miaomiaowu/internal/logger"
 	"math"
+	"miaomiaowu/internal/logger"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -116,11 +116,12 @@ func (h *TrafficSummaryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := h.recordSnapshot(ctx, totalLimit, totalUsed, totalRemaining); err != nil {
+	now := time.Now()
+	if err := h.recordSnapshot(ctx, now, totalLimit, totalUsed, totalRemaining); err != nil {
 		logger.Info("[流量] 记录快照失败", "error", err)
 	}
 
-	history, err := h.loadHistory(ctx, 30)
+	history, err := h.loadHistory(ctx, now, 30)
 	if err != nil {
 		logger.Info("[流量] 加载历史记录失败", "error", err)
 	}
@@ -201,7 +202,7 @@ func (h *TrafficSummaryHandler) RecordDailyUsage(ctx context.Context) error {
 		"remaining_gb", remainingGB,
 		"usage_percent", usagePercent)
 
-	if err := h.recordSnapshot(ctx, totalLimit, totalUsed, totalRemaining); err != nil {
+	if err := h.recordSnapshot(ctx, time.Now(), totalLimit, totalUsed, totalRemaining); err != nil {
 		logger.Error("[流量记录] 保存快照到数据库失败", "error", err)
 		return err
 	}
@@ -1122,50 +1123,43 @@ func usagePercentage(used, limit int64) float64 {
 	return (float64(used) / float64(limit)) * 100
 }
 
-func (h *TrafficSummaryHandler) recordSnapshot(ctx context.Context, totalLimit, totalUsed, totalRemaining int64) error {
+func (h *TrafficSummaryHandler) recordSnapshot(ctx context.Context, date time.Time, totalLimit, totalUsed, totalRemaining int64) error {
 	if h.repo == nil {
 		return nil
 	}
 
-	return h.repo.RecordDaily(ctx, time.Now(), totalLimit, totalUsed, totalRemaining)
+	return h.repo.RecordDaily(ctx, date, totalLimit, totalUsed, totalRemaining)
 }
 
-func (h *TrafficSummaryHandler) loadHistory(ctx context.Context, days int) ([]trafficDailyUsage, error) {
-	if h.repo == nil {
+func (h *TrafficSummaryHandler) loadHistory(ctx context.Context, now time.Time, days int) ([]trafficDailyUsage, error) {
+	if h.repo == nil || days <= 0 {
 		return nil, nil
 	}
 
-	records, err := h.repo.ListRecent(ctx, days)
+	today := now.UTC().Truncate(24 * time.Hour)
+	// The day before the selected window is needed to calculate its first delta.
+	records, err := h.repo.ListRecentThrough(ctx, today, days+1)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(records) == 0 {
-		return nil, nil
-	}
+	start := today.AddDate(0, 0, 1-days)
+	slices.Reverse(records)
 
-	sort.SliceStable(records, func(i, j int) bool {
-		return records[i].Date.Before(records[j].Date)
-	})
-
-	usages := make([]trafficDailyUsage, 0, len(records))
-	var prevUsed int64
-	var hasPrev bool
-
-	for _, record := range records {
-		delta := record.TotalUsed
-		if hasPrev {
-			delta = record.TotalUsed - prevUsed
-			if delta < 0 {
-				delta = 0
-			}
+	var usages []trafficDailyUsage
+	for i := 1; i < len(records); i++ {
+		previous, current := records[i-1], records[i]
+		if current.Date.Before(start) {
+			continue
+		}
+		// A delta spanning a gap cannot be attributed to a single day.
+		if !previous.Date.AddDate(0, 0, 1).Equal(current.Date) {
+			continue
 		}
 
-		prevUsed = record.TotalUsed
-		hasPrev = true
-
+		delta := max(0, current.TotalUsed-previous.TotalUsed)
 		usages = append(usages, trafficDailyUsage{
-			Date:   record.Date.Format("2006-01-02"),
+			Date:   current.Date.Format(time.DateOnly),
 			UsedGB: roundUpTwoDecimals(bytesToGigabytes(delta)),
 		})
 	}

@@ -458,16 +458,36 @@ function SubscribeFilesPage() {
   const [previewConfigName, setPreviewConfigName] = useState('')
 
   // 获取订阅文件列表
-  const { data: filesData, isLoading } = useQuery({
+  const [fileSearch, setFileSearch] = useState('')
+  const {
+    data: filesData,
+    isLoading,
+    isError: filesError,
+    isFetching: filesFetching,
+    refetch: refetchFiles,
+  } = useQuery({
     queryKey: ['subscribe-files'],
-    queryFn: async () => {
-      const response = await api.get('/api/admin/subscribe-files')
-      return response.data as { files: SubscribeFile[] }
+    queryFn: async ({ signal }) => {
+      const response = await api.get<{ files: SubscribeFile[] }>(
+        '/api/admin/subscribe-files',
+        { signal }
+      )
+      return response.data
     },
     enabled: Boolean(auth.accessToken),
+    meta: { showErrorInPage: true },
   })
 
   const files = filesData?.files ?? []
+  const fileSearchTerm = fileSearch.trim().toLowerCase()
+  const visibleFiles = fileSearchTerm
+    ? files.filter((file) =>
+        [file.name, file.filename, file.description].some((value) =>
+          value?.toLowerCase().includes(fileSearchTerm)
+        )
+      )
+    : files
+  const hasHiddenFiles = visibleFiles.length < files.length
 
   // 获取订阅流量数据（含探针总流量）
   const { data: subscribeTrafficData } = useQuery({
@@ -2976,17 +2996,66 @@ const handleUpload = () => {
             </div>
           </CardHeader>
           <CardContent>
+            {filesError && (
+              <div className='mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border px-3 py-2'>
+                <p role='alert' className='text-destructive text-sm'>
+                  {filesData
+                    ? '订阅列表更新失败，当前显示上次加载的结果。'
+                    : '加载订阅列表失败。'}
+                </p>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={filesFetching}
+                  onClick={() => void refetchFiles()}
+                >
+                  {filesFetching ? '正在重试…' : '重试'}
+                </Button>
+              </div>
+            )}
+            {files.length > 0 && (
+              <div className='mb-4 space-y-2'>
+                <div className='flex flex-wrap items-end gap-2'>
+                  <div className='min-w-48 flex-1 space-y-1.5 sm:max-w-md'>
+                    <Label htmlFor='subscribe-files-search'>搜索订阅</Label>
+                    <Input
+                      id='subscribe-files-search'
+                      type='search'
+                      placeholder='订阅名、文件名或说明'
+                      value={fileSearch}
+                      onChange={(event) => setFileSearch(event.target.value)}
+                    />
+                  </div>
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    disabled={!fileSearch}
+                    onClick={() => setFileSearch('')}
+                  >
+                    清除搜索
+                  </Button>
+                </div>
+                {fileSearchTerm && (
+                  <p role='status' className='text-muted-foreground text-sm'>
+                    显示 {visibleFiles.length} 条，共 {files.length} 条订阅
+                    {hasHiddenFiles && visibleFiles.length > 0 && '。清除搜索后可调整完整列表的顺序。'}
+                  </p>
+                )}
+              </div>
+            )}
             {isLoading ? (
-              <div className='text-center py-8 text-muted-foreground'>加载中...</div>
-            ) : files.length === 0 ? (
+              <div role='status' className='text-center py-8 text-muted-foreground'>正在加载订阅列表…</div>
+            ) : filesData && files.length === 0 ? (
               <div className='text-center py-8 text-muted-foreground'>
                 暂无订阅，点击上方按钮添加
               </div>
-            ) : (
+            ) : files.length > 0 ? (
               <DataTable
-                data={files}
+                data={visibleFiles}
                 getRowKey={(file) => file.id}
-                emptyText='暂无订阅，点击上方按钮添加'
+                emptyText='暂无符合搜索条件的订阅。'
 
                 columns={[
                   {
@@ -3826,7 +3895,7 @@ const handleUpload = () => {
                           size='icon'
                           className='h-7 w-7'
                           onClick={() => handleMoveUp(idx)}
-                          disabled={idx === 0 || reorderMutation.isPending}
+                          disabled={hasHiddenFiles || idx === 0 || reorderMutation.isPending}
                           title='上移'
                         >
                           <ChevronUp className='h-4 w-4' />
@@ -3836,7 +3905,7 @@ const handleUpload = () => {
                           size='icon'
                           className='h-7 w-7'
                           onClick={() => handleMoveDown(idx)}
-                          disabled={idx >= files.length - 1 || reorderMutation.isPending}
+                          disabled={hasHiddenFiles || idx >= files.length - 1 || reorderMutation.isPending}
                           title='下移'
                         >
                           <ChevronDown className='h-4 w-4' />
@@ -4244,7 +4313,7 @@ const handleUpload = () => {
                   )
                 }}
               />
-            )}
+            ) : null}
           </CardContent>
         </Card>
 

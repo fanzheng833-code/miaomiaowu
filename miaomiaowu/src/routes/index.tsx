@@ -73,17 +73,16 @@ function DashboardPage() {
     })
 
   const history = data?.history
+  const today = new Date().toISOString().slice(0, 10)
   const chartData = useMemo(() => {
     if (!history?.length) return []
 
-    // The API returns dates in ascending order. Use calendar days so missing
-    // records don't extend the selected range.
-    const latest = history[history.length - 1].date
-    const cutoff = new Date(latest)
+    // The API stores snapshots by UTC date.
+    const cutoff = new Date(today)
     cutoff.setUTCDate(cutoff.getUTCDate() - range + 1)
     const oldest = cutoff.toISOString().slice(0, 10)
-    return history.filter((entry) => entry.date >= oldest)
-  }, [history, range])
+    return history.filter((entry) => entry.date >= oldest && entry.date <= today)
+  }, [history, range, today])
 
   const metrics = data?.metrics
   const cards = [
