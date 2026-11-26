@@ -3,6 +3,7 @@ set -euo pipefail
 
 readonly installer_header='# 妙妙屋 Docker 安装配置 v1'
 readonly repository='https://github.com/fanzheng833-code/miaomiaowu.git'
+readonly default_ref=install
 
 fail() {
     printf '妙妙屋安装失败：%s\n' "$*" >&2
@@ -10,11 +11,11 @@ fail() {
 }
 
 usage() {
-    cat <<'EOF'
+    cat <<EOF
 妙妙屋 Docker 一键安装
 用法：bash docker-install.sh [--dir 路径] [--port 端口] [--ref Git引用] [--public | --local]
 
-首次安装默认目录为 ~/miaomiaowu，端口为 8080，来源为 main，仅本机可访问。
+首次安装默认目录为 ~/miaomiaowu，端口为 8080，来源为 $default_ref，仅本机可访问。
 --public  允许从服务器的其他 IPv4 地址访问
 --local   恢复仅本机访问
 --ref     GitHub 分支、标签或完整提交号
@@ -94,7 +95,7 @@ trap 'exit 143' TERM
 
 [[ ! -L $compose_file ]] || fail "安装目录里已有 Compose 链接，请选择其他目录：$compose_file"
 project=miaomiaowu-$RANDOM-$RANDOM
-saved_ref=main
+saved_ref=$default_ref
 saved_port=8080
 saved_bind=127.0.0.1
 write_config=1

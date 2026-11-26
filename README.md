@@ -43,13 +43,13 @@
 在已运行 Docker Engine、并装有支持 `--wait-timeout` 的 Docker Compose v2 的 Linux 服务器上，执行以下命令。脚本从本仓库指定分支构建面板，生成 Compose 配置，并在容器健康检查通过后显示访问地址。
 
 ```bash
-curl -fsSLo docker-install.sh https://raw.githubusercontent.com/fanzheng833-code/miaomiaowu/refs/heads/enhancement/one-click-install/docker-install.sh && bash docker-install.sh --ref enhancement/one-click-install
+curl -fsSLO https://github.com/fanzheng833-code/miaomiaowu/raw/install/docker-install.sh && bash docker-install.sh
 ```
 
 默认安装在 `~/miaomiaowu`，面板绑定 `127.0.0.1:8080`。远程服务器可从自己的电脑运行 `ssh -L 8080:127.0.0.1:8080 user@server`，再打开 `http://127.0.0.1:8080` 创建管理员账号。
 
 - `--port 18080` 修改宿主机端口，`--dir /path/to/miaomiaowu` 指定安装目录。
-- `--ref` 可以指定本仓库的分支、标签或完整提交号。首次安装省略时使用 `main`。
+- `--ref` 可以指定本仓库的分支、标签或完整提交号。首次安装省略时使用 `install`。
 - 创建管理员后，如需其他设备访问，可在服务器上执行 `bash docker-install.sh --public`。使用 `--local` 可恢复本机绑定。
 - 重复运行会沿用同一目录内的 Compose 配置，并保留 `data`、`subscribes` 和 `rule_templates`。使用过 `--dir` 时，后续命令也要指定同一目录。
 
