@@ -75,6 +75,8 @@ function TemplatesV3Page() {
 
   // Editing state
   const [editingTemplateName, setEditingTemplateName] = useState<string | null>(null)
+  const [loadedTemplateName, setLoadedTemplateName] = useState<string | null>(null)
+  const templateReady = isEditorOpen && editingTemplateName !== null && loadedTemplateName === editingTemplateName
 	const isSurgeTemplate = editingTemplateName?.toLowerCase().endsWith('.conf') ?? false
 	const isLoonTemplate = editingTemplateName?.toLowerCase().endsWith('.lcf') ?? false
 	const isQXTemplate = editingTemplateName?.toLowerCase().endsWith('.qx') ?? false
@@ -148,13 +150,18 @@ function TemplatesV3Page() {
 	})
 
   // Fetch template content when editing
-  const { data: templateData } = useQuery({
+  const templateQuery = useQuery({
     queryKey: ['rule-template', editingTemplateName],
-    queryFn: async () => {
-      const response = await api.get(`/api/admin/rule-templates/${encodeURIComponent(editingTemplateName!)}`)
-      return response.data.content as string
+    queryFn: async ({ signal }) => {
+      const response = await api.get(`/api/admin/rule-templates/${encodeURIComponent(editingTemplateName!)}`, { signal })
+      const content = response.data?.content
+      if (typeof content !== 'string') throw new Error('模板内容格式无效')
+      return content
     },
     enabled: !!editingTemplateName && isEditorOpen,
+    staleTime: 0,
+    retry: false,
+    meta: { showErrorInPage: true },
   })
 
   // Fetch nodes for preview
@@ -175,7 +182,8 @@ function TemplatesV3Page() {
         return { name: node.node_name, type: node.protocol }
       }).filter((n: any) => n.name && n.type)
     },
-    enabled: isEditorOpen,
+    enabled: templateReady,
+    meta: { showErrorInPage: true },
   })
 
   // Update template mutation
@@ -183,19 +191,12 @@ function TemplatesV3Page() {
     mutationFn: async ({ name, content }: { name: string; content: string }) => {
       await api.put(`/api/admin/rule-templates/${encodeURIComponent(name)}`, { content })
     },
-    onSuccess: () => {
+    onSuccess: (_, { name }) => {
       queryClient.invalidateQueries({ queryKey: ['rule-templates'] })
-      queryClient.invalidateQueries({ queryKey: ['rule-template', editingTemplateName] })
-      if (editingTemplateName) {
-        localStorage.removeItem(TEMPLATE_DRAFT_KEY_PREFIX + editingTemplateName)
-      }
+      queryClient.invalidateQueries({ queryKey: ['rule-template', name] })
+      localStorage.removeItem(TEMPLATE_DRAFT_KEY_PREFIX + name)
       toast.success('模板保存成功')
-      setIsDirty(false)
-      // Close editor after successful save
-      setIsEditorOpen(false)
-      setEditingTemplateName(null)
-      setTemplateContent('')
-      setProxyGroups([])
+      doCloseEditor()
     },
     onError: (error: any) => {
       toast.error(error.response?.data?.error || '保存失败')
@@ -275,55 +276,48 @@ function TemplatesV3Page() {
     },
   })
 
-  // Load template content when data is fetched
+  // Initialize from the first successful read for this editor. Later refreshes
+  // update the query cache without replacing the open draft.
+  const { data: templateData, isFetching: templateFetching, isSuccess: templateLoaded } = templateQuery
   useEffect(() => {
-    if (templateData && isEditorOpen) {
-      isInitLoadRef.current = true
-      setTemplateContent(templateData)
-	  if (isTextTemplate) {
-		setEditorTab('yaml')
-		setTemplateVariables({})
-		setProxyGroups([])
-		setEnableRegionProxyGroups(false)
-		setIsDirty(false)
-		isInitLoadRef.current = false
-		return
-	  }
-      const vars = extractTemplateVariables(templateData)
-      setTemplateVariables(vars)
-      const groups = extractProxyGroups(templateData, vars)
-      setProxyGroups(groups)
-      // Auto-enable region proxy groups toggle if any group has includeRegionProxyGroups
-      const hasRegionProxyGroups = groups.some(g => g.includeRegionProxyGroups)
-      setEnableRegionProxyGroups(hasRegionProxyGroups)
-      setIsDirty(false)
-      // Allow ProxyGroupSelect's ensureMarkers setTimeout to finish before enabling dirty tracking
-      setTimeout(() => {
-        isInitLoadRef.current = false
-        // Check for local draft
-        if (editingTemplateName) {
-          const draftJson = localStorage.getItem(TEMPLATE_DRAFT_KEY_PREFIX + editingTemplateName)
-          if (draftJson) {
-            try {
-              const draft = JSON.parse(draftJson)
-              // Normalize templateData the same way draft was saved
-              const vars = extractTemplateVariables(templateData)
-              const groups = extractProxyGroups(templateData, vars)
-              const normalizedData = groups.length > 0 ? updateProxyGroups(templateData, groups) : templateData
-              if (draft.templateContent !== normalizedData) {
-                pendingDraftRef.current = draft
-                setIsDraftRecoveryOpen(true)
-              } else {
-                localStorage.removeItem(TEMPLATE_DRAFT_KEY_PREFIX + editingTemplateName)
-              }
-            } catch {
-              localStorage.removeItem(TEMPLATE_DRAFT_KEY_PREFIX + editingTemplateName)
-            }
-          }
+    if (!isEditorOpen || !editingTemplateName || templateReady || templateFetching ||
+      !templateLoaded || typeof templateData !== 'string') return
+
+    const vars = isTextTemplate ? {} : extractTemplateVariables(templateData)
+    const groups = isTextTemplate ? [] : extractProxyGroups(templateData, vars)
+    isInitLoadRef.current = !isTextTemplate
+    setTemplateContent(templateData)
+    setEditorTab(isTextTemplate ? 'yaml' : 'visual')
+    setTemplateVariables(vars)
+    setProxyGroups(groups)
+    setEnableRegionProxyGroups(groups.some(group => group.includeRegionProxyGroups))
+    setIsDirty(false)
+    setLoadedTemplateName(editingTemplateName)
+
+    const draftKey = TEMPLATE_DRAFT_KEY_PREFIX + editingTemplateName
+    const draftJson = localStorage.getItem(draftKey)
+    if (draftJson) {
+      try {
+        const draft = JSON.parse(draftJson)
+        const normalizedData = groups.length > 0 ? updateProxyGroups(templateData, groups) : templateData
+        if (draft.templateContent !== normalizedData) {
+          pendingDraftRef.current = draft
+          setIsDraftRecoveryOpen(true)
+        } else {
+          localStorage.removeItem(draftKey)
         }
-      }, 50)
+      } catch {
+        localStorage.removeItem(draftKey)
+      }
     }
-  }, [templateData, isEditorOpen, isTextTemplate])
+  }, [editingTemplateName, isEditorOpen, isTextTemplate, templateData, templateFetching, templateLoaded, templateReady])
+
+  useEffect(() => {
+    if (!templateReady || isDraftRecoveryOpen) return
+    // Let ProxyGroupSelect apply its initial markers before tracking edits.
+    const timeout = setTimeout(() => { isInitLoadRef.current = false }, 50)
+    return () => clearTimeout(timeout)
+  }, [templateReady, isDraftRecoveryOpen])
 
   // Auto-refresh proxy-groups preview when proxyGroups changes
   useEffect(() => {
@@ -378,6 +372,7 @@ function TemplatesV3Page() {
 
   // Handle edit
   const handleEdit = (name: string) => {
+    updateMutation.reset()
     setEditingTemplateName(name)
     setIsEditorOpen(true)
     setEditorTab('visual')
@@ -440,7 +435,7 @@ function TemplatesV3Page() {
 
   // Handle save
   const handleSave = () => {
-    if (!editingTemplateName) return
+    if (!templateReady || !editingTemplateName || updateMutation.isPending) return
     let content = templateContent
     if (editorTab === 'visual') {
       content = updateProxyGroups(templateContent, proxyGroups)
@@ -450,6 +445,7 @@ function TemplatesV3Page() {
 
   // Handle close editor
   const handleCloseEditor = () => {
+    if (updateMutation.isPending) return
     if (isDirty) {
       setIsCloseConfirmOpen(true)
       return
@@ -460,25 +456,27 @@ function TemplatesV3Page() {
   const doCloseEditor = () => {
     setIsEditorOpen(false)
     setEditingTemplateName(null)
+    setLoadedTemplateName(null)
     setTemplateContent('')
     setProxyGroups([])
     setPreviewContent('')
     setIsDirty(false)
     setIsCloseConfirmOpen(false)
+    setIsDraftRecoveryOpen(false)
+    pendingDraftRef.current = null
     setEnableRegionProxyGroups(false)
   }
 
   const handleRecoverDraft = () => {
     const draft = pendingDraftRef.current
     if (!draft) return
-    isInitLoadRef.current = true
+    isInitLoadRef.current = !isTextTemplate
     setTemplateContent(draft.templateContent)
     setProxyGroups(draft.proxyGroups)
     setEnableRegionProxyGroups(draft.enableRegionProxyGroups)
     setTemplateVariables(draft.templateVariables)
     setEditorTab(draft.editorTab)
     setIsDirty(true)
-    setTimeout(() => { isInitLoadRef.current = false }, 50)
     setIsDraftRecoveryOpen(false)
     pendingDraftRef.current = null
   }
@@ -700,11 +698,11 @@ function TemplatesV3Page() {
               )}>
                 {isDirty && <Badge variant="secondary">未保存</Badge>}
                 <div className="flex gap-2">
-                  <Button onClick={handleSave} disabled={updateMutation.isPending} size={isMobile ? "sm" : "default"}>
+                  <Button onClick={handleSave} disabled={!templateReady || updateMutation.isPending} size={isMobile ? "sm" : "default"}>
                     <Save className="h-4 w-4 mr-1 sm:mr-2" />
-                    保存
+                    {updateMutation.isPending ? '保存中…' : '保存'}
                   </Button>
-                  <Button variant="outline" onClick={handleCloseEditor} size={isMobile ? "sm" : "default"}>
+                  <Button variant="outline" onClick={handleCloseEditor} disabled={updateMutation.isPending} size={isMobile ? "sm" : "default"}>
                     关闭
                   </Button>
                 </div>
@@ -712,8 +710,25 @@ function TemplatesV3Page() {
             </div>
           </DialogHeader>
 
+          {!templateReady && (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center text-sm">
+              {templateQuery.isError && !templateFetching ? (
+                <>
+                  <p role="alert" className="text-destructive">模板加载失败。</p>
+                  <Button variant="outline" onClick={() => void templateQuery.refetch()}>重试</Button>
+                </>
+              ) : (
+                <p role="status" className="text-muted-foreground">正在加载模板…</p>
+              )}
+            </div>
+          )}
+
+          {updateMutation.isError && (
+            <p role="alert" className="text-destructive text-sm">模板保存失败，已保留你的修改，可以重试。</p>
+          )}
+
           {/* Mobile: Preview below save button */}
-          {isMobile && (
+          {templateReady && isMobile && (
             <div className="flex-shrink-0 border-b pb-4 mt-2">
               <Collapsible open={isPreviewOpen} onOpenChange={setIsPreviewOpen}>
                 <CollapsibleTrigger asChild>
@@ -734,7 +749,7 @@ function TemplatesV3Page() {
             </div>
           )}
 
-          <div className={cn(
+          {templateReady && <div inert={updateMutation.isPending} className={cn(
             "flex-1 flex gap-4 overflow-hidden mt-4",
             isMobile ? "flex-col" : "flex-row"
           )}>
@@ -816,7 +831,7 @@ function TemplatesV3Page() {
                 />
               </div>
             )}
-          </div>
+          </div>}
         </DialogContent>
       </Dialog>
 

@@ -152,25 +152,37 @@ function OverrideManagementPage() {
   })
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null)
   const [isRuleProviderConfirmOpen, setIsRuleProviderConfirmOpen] = useState(false)
-  const [pendingRuleProviderData, setPendingRuleProviderData] = useState<FormData | null>(null)
+  const [providerCreated, setProviderCreated] = useState(false)
+  const [savingProvider, setSavingProvider] = useState(false)
+  const [saveFailed, setSaveFailed] = useState(false)
 
-  const { data: rules = [], isLoading: isLoadingRules } = useQuery<CustomRule[]>({
+  const rulesQuery = useQuery({
     queryKey: ['custom-rules'],
-    queryFn: async () => {
-      const response = await api.get('/api/admin/custom-rules')
+    queryFn: async ({ signal }) => {
+      const response = await api.get<CustomRule[]>('/api/admin/custom-rules', { signal })
       return response.data
     },
+    retry: false,
+    meta: { showErrorInPage: true },
   })
 
-  const { data: scripts = [], isLoading: isLoadingScripts } = useQuery<OverrideScript[]>({
+  const scriptsQuery = useQuery({
     queryKey: ['override-scripts'],
-    queryFn: async () => {
-      const response = await api.get('/api/admin/override-scripts')
+    queryFn: async ({ signal }) => {
+      const response = await api.get<OverrideScript[]>('/api/admin/override-scripts', { signal })
       return response.data
     },
+    retry: false,
+    meta: { showErrorInPage: true },
   })
 
-  const isLoading = isLoadingRules || isLoadingScripts
+  const rules = rulesQuery.data ?? []
+  const scripts = scriptsQuery.data ?? []
+  const listErrors = [
+    { name: '覆写规则', query: rulesQuery },
+    { name: '覆写脚本', query: scriptsQuery },
+  ].filter(({ query }) => query.isError)
+  const isLoading = rulesQuery.isLoading || scriptsQuery.isLoading
 
   const allItems: OverrideItem[] = [
     ...rules.map(ruleToItem),
@@ -324,6 +336,14 @@ function OverrideManagementPage() {
     })
     setEditingItem(null)
     setSelectedTemplate(null)
+    setProviderCreated(false)
+    setSaveFailed(false)
+  }
+
+  const closeEditor = () => {
+    setIsDialogOpen(false)
+    setIsRuleProviderConfirmOpen(false)
+    resetForm()
   }
 
   const handleCreate = () => {
@@ -332,6 +352,7 @@ function OverrideManagementPage() {
   }
 
   const handleEdit = (item: OverrideItem) => {
+    setSaveFailed(false)
     setEditingItem(item)
     setFormData({
       name: item.name,
@@ -372,7 +393,9 @@ function OverrideManagementPage() {
     }
   }
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
+    if (isSaving || needsRulesForSave) return
+    setSaveFailed(false)
     if (!formData.name.trim()) {
       toast.error('请输入名称')
       return
@@ -382,72 +405,50 @@ function OverrideManagementPage() {
       return
     }
 
-    const isScript = formData.type === 'script'
-
-    if (isScript) {
-      if (editingItem) {
-        updateScriptMutation.mutate({
-          id: editingItem.id,
-          name: formData.name,
-          hook: formData.hook,
-          content: formData.content,
-          enabled: formData.enabled,
-          sort_order: formData.sort_order,
-        })
-      } else {
-        createScriptMutation.mutate({
-          name: formData.name,
-          hook: formData.hook,
-          content: formData.content,
-          enabled: formData.enabled,
-          sort_order: formData.sort_order,
-        })
-      }
-      setIsDialogOpen(false)
-      resetForm()
-      return
-    }
-
     // Rule: check rule-provider template confirmation
     if (!editingItem && formData.type === 'rule-providers' && selectedTemplate && selectedTemplate in RULE_PROVIDER_RULES) {
-      setPendingRuleProviderData(formData)
       setIsRuleProviderConfirmOpen(true)
       return
     }
 
-    const ruleData = {
-      name: formData.name,
-      type: formData.type,
-      mode: formData.mode,
-      content: formData.content,
-      enabled: formData.enabled,
+    const { name, type, mode, hook, content, enabled, sort_order } = formData
+    try {
+      if (type === 'script') {
+        const scriptData = { name, hook, content, enabled, sort_order }
+        if (editingItem) {
+          await updateScriptMutation.mutateAsync({ id: editingItem.id, ...scriptData })
+        } else {
+          await createScriptMutation.mutateAsync(scriptData)
+        }
+      } else {
+        const ruleData = { name, type, mode, content, enabled }
+        if (editingItem) {
+          await updateRuleMutation.mutateAsync({ id: editingItem.id, ...ruleData })
+        } else {
+          await createRuleMutation.mutateAsync(ruleData)
+        }
+      }
+      closeEditor()
+    } catch {
+      setSaveFailed(true)
     }
-
-    if (editingItem) {
-      updateRuleMutation.mutate({ id: editingItem.id, ...ruleData })
-    } else {
-      createRuleMutation.mutate(ruleData)
-    }
-    setIsDialogOpen(false)
-    resetForm()
   }
 
   const handleRuleProviderConfirm = async (createRuleConfig: boolean) => {
-    if (!pendingRuleProviderData) return
+    if (isSaving) return
+    setSavingProvider(true)
+    setSaveFailed(false)
     try {
-      await createRuleMutation.mutateAsync({
-        name: pendingRuleProviderData.name,
-        type: pendingRuleProviderData.type,
-        mode: pendingRuleProviderData.mode,
-        content: pendingRuleProviderData.content,
-        enabled: pendingRuleProviderData.enabled,
-      })
+      if (!providerCreated) {
+        const { name, type, mode, content, enabled } = formData
+        await createRuleMutation.mutateAsync({ name, type, mode, content, enabled })
+        setProviderCreated(true)
+      }
 
       if (createRuleConfig && selectedTemplate && selectedTemplate in RULE_PROVIDER_RULES) {
         const ruleContent = RULE_PROVIDER_RULES[selectedTemplate as keyof typeof RULE_PROVIDER_RULES]
-        await queryClient.invalidateQueries({ queryKey: ['custom-rules'] })
-        const latestRules = await api.get('/api/admin/custom-rules').then((res) => res.data)
-        const existingRulesRules = latestRules?.filter((r: CustomRule) => r.type === 'rules')
+        const { data: latestRules } = await api.get<CustomRule[]>('/api/admin/custom-rules')
+        const existingRulesRules = latestRules.filter((r) => r.type === 'rules')
         let finalRuleContent = ruleContent
 
         if (existingRulesRules && existingRulesRules.length > 0) {
@@ -465,7 +466,7 @@ function OverrideManagementPage() {
         }
 
         await createRuleMutation.mutateAsync({
-          name: `路由规则 - ${pendingRuleProviderData.name}`,
+          name: `路由规则 - ${formData.name}`,
           type: 'rules',
           mode: 'append',
           content: finalRuleContent,
@@ -475,13 +476,11 @@ function OverrideManagementPage() {
       } else {
         toast.success('规则集已创建')
       }
+      closeEditor()
     } catch {
-      toast.error('创建规则配置时出错')
+      setSaveFailed(true)
     } finally {
-      setIsRuleProviderConfirmOpen(false)
-      setPendingRuleProviderData(null)
-      setIsDialogOpen(false)
-      resetForm()
+      setSavingProvider(false)
     }
   }
 
@@ -523,8 +522,11 @@ function OverrideManagementPage() {
   }
 
   const isScript = formData.type === 'script'
+  const needsRulesForSave =
+    !isScript && formData.enabled && formData.mode === 'replace' && !rulesQuery.data
 
-  const isMutating =
+  const isSaving =
+    savingProvider ||
     createRuleMutation.isPending ||
     updateRuleMutation.isPending ||
     createScriptMutation.isPending ||
@@ -533,7 +535,7 @@ function OverrideManagementPage() {
   return (
     <main className='mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 pt-24'>
       <div className='space-y-6'>
-        <div className='flex items-center justify-between'>
+        <div className='flex flex-wrap items-start justify-between gap-3 sm:items-center'>
           <div>
             <h1 className='text-3xl font-bold'>覆写管理</h1>
             <p className='text-muted-foreground mt-2'>
@@ -548,7 +550,7 @@ function OverrideManagementPage() {
 
         <Card>
           <CardHeader>
-            <div className='flex items-center justify-between'>
+            <div className='flex flex-wrap items-center justify-between gap-3'>
               <div>
                 <CardTitle>覆写列表</CardTitle>
                 <CardDescription>{filteredItems.length} 条覆写设置</CardDescription>
@@ -565,9 +567,25 @@ function OverrideManagementPage() {
             </div>
           </CardHeader>
           <CardContent>
+            {listErrors.map(({ name, query }) => (
+              <div key={name} className='mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2'>
+                <p role='alert' className='text-destructive text-sm'>
+                  {query.data ? `${name}更新失败，已保留上次加载的结果。` : `加载${name}失败。`}
+                </p>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={query.isFetching}
+                  onClick={() => void query.refetch()}
+                >
+                  {query.isFetching ? '正在重试…' : `重试加载${name}`}
+                </Button>
+              </div>
+            ))}
             {isLoading ? (
-              <div className='text-center py-8 text-muted-foreground'>加载中...</div>
-            ) : (
+              <div role='status' className='text-center py-8 text-muted-foreground'>正在加载覆写设置…</div>
+            ) : filteredItems.length > 0 || listErrors.length === 0 ? (
               <DataTable
                 data={filteredItems}
                 getRowKey={(item) => `${item.kind}-${item.id}`}
@@ -617,10 +635,10 @@ function OverrideManagementPage() {
                     header: '操作',
                     cell: (item) => (
                       <div className='flex justify-end gap-2'>
-                        <Button variant='ghost' size='icon' onClick={() => handleEdit(item)}>
+                        <Button variant='ghost' size='icon' aria-label={`编辑 ${item.name}`} onClick={() => handleEdit(item)}>
                           <Pencil className='h-4 w-4' />
                         </Button>
-                        <Button variant='ghost' size='icon' onClick={() => handleDelete(item)}>
+                        <Button variant='ghost' size='icon' aria-label={`删除 ${item.name}`} onClick={() => handleDelete(item)}>
                           <Trash2 className='h-4 w-4' />
                         </Button>
                       </div>
@@ -685,14 +703,23 @@ function OverrideManagementPage() {
                   ),
                 }}
               />
-            )}
+            ) : null}
           </CardContent>
         </Card>
       </div>
 
       {/* Create/Edit Dialog */}
-      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-        <DialogContent className='max-w-3xl max-h-[90vh] overflow-y-auto'>
+      <Dialog
+        open={isDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && !isSaving && !isRuleProviderConfirmOpen) closeEditor()
+        }}
+      >
+        <DialogContent
+          className='max-h-[90vh] overflow-y-auto sm:max-w-3xl'
+          aria-busy={isSaving}
+          showCloseButton={!isSaving}
+        >
           <DialogHeader>
             <DialogTitle>
               {editingItem ? '编辑覆写设置' : '添加覆写设置'}
@@ -706,28 +733,38 @@ function OverrideManagementPage() {
             </DialogDescription>
           </DialogHeader>
 
+          {saveFailed && !isRuleProviderConfirmOpen && (
+            <p role='alert' className='text-destructive text-sm'>保存失败，输入已保留。请修改后重试或直接重新保存。</p>
+          )}
+          {needsRulesForSave && (
+            <div className='flex flex-wrap items-center gap-2'>
+              <p role={rulesQuery.isError ? 'alert' : 'status'} className='text-muted-foreground text-sm'>
+                {rulesQuery.isError ? '请重新加载现有规则后再保存替换规则。' : '正在加载现有规则…'}
+              </p>
+              {rulesQuery.isError && (
+                <Button type='button' size='sm' variant='outline' disabled={rulesQuery.isFetching} onClick={() => void rulesQuery.refetch()}>
+                  重试加载覆写规则
+                </Button>
+              )}
+            </div>
+          )}
           {/* 顶部操作区 */}
           <div className='flex items-center justify-between border-b pb-4'>
             <div className='flex items-center space-x-2'>
               <Switch
                 id='enabled'
                 checked={formData.enabled}
+                disabled={isSaving}
                 onCheckedChange={(checked) => setFormData({ ...formData, enabled: checked })}
               />
               <Label htmlFor='enabled'>启用</Label>
             </div>
             <div className='flex items-center space-x-2'>
-              <Button
-                variant='outline'
-                onClick={() => {
-                  setIsDialogOpen(false)
-                  resetForm()
-                }}
-              >
+              <Button variant='outline' disabled={isSaving} onClick={closeEditor}>
                 取消
               </Button>
-              <Button onClick={handleSubmit} disabled={isMutating}>
-                {isMutating ? '保存中...' : '保存'}
+              <Button onClick={() => void handleSubmit()} disabled={isSaving || needsRulesForSave}>
+                {isSaving ? '保存中...' : '保存'}
               </Button>
             </div>
           </div>
@@ -738,12 +775,13 @@ function OverrideManagementPage() {
               <Input
                 id='name'
                 value={formData.name}
+                disabled={isSaving}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 placeholder='覆写设置名称'
               />
             </div>
 
-            <div className={`grid gap-4 ${!editingItem && !isScript ? 'grid-cols-4' : isScript ? 'grid-cols-2' : 'grid-cols-2'}`}>
+            <div className={`grid grid-cols-2 gap-4 ${!editingItem && !isScript ? 'sm:grid-cols-4' : ''}`}>
               <div className='space-y-2'>
                 <Label htmlFor='type'>类型</Label>
                 <Select
@@ -755,7 +793,7 @@ function OverrideManagementPage() {
                     setFormData(newFormData)
                     setSelectedTemplate(null)
                   }}
-                  disabled={!!editingItem}
+                  disabled={!!editingItem || isSaving}
                 >
                   <SelectTrigger id='type'>
                     <SelectValue />
@@ -774,6 +812,7 @@ function OverrideManagementPage() {
                   <Label htmlFor='hook'>钩子</Label>
                   <Select
                     value={formData.hook}
+                    disabled={isSaving}
                     onValueChange={(value) => setFormData({ ...formData, hook: value })}
                   >
                     <SelectTrigger id='hook'>
@@ -791,7 +830,7 @@ function OverrideManagementPage() {
                   <Select
                     value={formData.mode}
                     onValueChange={(value: any) => setFormData({ ...formData, mode: value })}
-                    disabled={formData.type === 'dns'}
+                    disabled={formData.type === 'dns' || isSaving}
                   >
                     <SelectTrigger id='mode'>
                       <SelectValue />
@@ -811,6 +850,7 @@ function OverrideManagementPage() {
                   <Label htmlFor='template'>模板（可选）</Label>
                   <Select
                     value={selectedTemplate || 'none'}
+                    disabled={isSaving}
                     onValueChange={(value: string) => {
                       if (value === 'none') {
                         setSelectedTemplate(null)
@@ -852,6 +892,7 @@ function OverrideManagementPage() {
                 <div className='space-y-2'>
                   <Label>模板（可选）</Label>
                   <Select
+                    disabled={isSaving}
                     onValueChange={(templateName) => {
                       const hookTemplates = OVERRIDE_SCRIPT_TEMPLATES[formData.hook as keyof typeof OVERRIDE_SCRIPT_TEMPLATES] || []
                       const template = hookTemplates.find((t) => t.name === templateName)
@@ -882,6 +923,7 @@ function OverrideManagementPage() {
               <Textarea
                 id='content'
                 value={formData.content}
+                disabled={isSaving}
                 onChange={(e) => setFormData({ ...formData, content: e.target.value })}
                 placeholder={
                   isScript
@@ -922,8 +964,19 @@ function OverrideManagementPage() {
       </AlertDialog>
 
       {/* Rule Provider Confirmation Dialog */}
-      <AlertDialog open={isRuleProviderConfirmOpen} onOpenChange={setIsRuleProviderConfirmOpen}>
-        <AlertDialogContent>
+      <AlertDialog
+        open={isRuleProviderConfirmOpen}
+        onOpenChange={(open) => {
+          if (open || isSaving) return
+          if (providerCreated) {
+            closeEditor()
+          } else {
+            setIsRuleProviderConfirmOpen(false)
+            setSaveFailed(false)
+          }
+        }}
+      >
+        <AlertDialogContent aria-busy={isSaving}>
           <AlertDialogHeader>
             <AlertDialogTitle>创建规则配置</AlertDialogTitle>
             <AlertDialogDescription>
@@ -932,13 +985,23 @@ function OverrideManagementPage() {
               规则配置将会追加到现有规则的末尾，系统会自动去除重复的规则（忽略大小写）。
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {saveFailed && (
+            <p role='alert' className='text-destructive text-sm'>
+              {providerCreated ? '规则集已创建。规则配置保存失败，可以单独重试。' : '保存失败，输入已保留，可以重试。'}
+            </p>
+          )}
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => handleRuleProviderConfirm(false)}>
-              仅创建规则集
+            <AlertDialogCancel disabled={isSaving}>
+              {providerCreated ? '完成' : '返回编辑'}
             </AlertDialogCancel>
-            <AlertDialogAction onClick={() => handleRuleProviderConfirm(true)}>
-              创建规则集和规则配置
-            </AlertDialogAction>
+            {!providerCreated && (
+              <Button variant='outline' disabled={isSaving} onClick={() => void handleRuleProviderConfirm(false)}>
+                仅创建规则集
+              </Button>
+            )}
+            <Button disabled={isSaving} onClick={() => void handleRuleProviderConfirm(true)}>
+              {isSaving ? '保存中...' : providerCreated ? '重试创建规则配置' : '创建规则集和规则配置'}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
