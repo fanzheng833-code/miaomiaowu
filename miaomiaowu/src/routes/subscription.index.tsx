@@ -34,6 +34,7 @@ import {
   Card,
   CardContent,
   CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
@@ -133,17 +134,21 @@ function SubscriptionPage() {
     data: subscribeFilesData,
     isPending: subscriptionsPending,
     isError: subscriptionsError,
+    isFetching: subscriptionsFetching,
+    refetch: refetchSubscriptions,
   } = useQuery({
     queryKey: ['user-subscriptions'],
-    queryFn: async () => {
-      const response = await api.get('/api/subscriptions')
-      return response.data as {
+    queryFn: async ({ signal }) => {
+      const response = await api.get<{
         subscriptions: SubscribeFile[]
         user_short_code: string
-      }
+      }>('/api/subscriptions', { signal })
+      return response.data
     },
     enabled: Boolean(auth.accessToken),
     staleTime: 60 * 1000,
+    retry: false,
+    meta: { showErrorInPage: true },
   })
 
   const subscribeFiles = subscribeFilesData?.subscriptions ?? []
@@ -153,14 +158,23 @@ function SubscriptionPage() {
     (file) =>
       !userShortCode || !(file.custom_short_code || file.file_short_code)
   )
-  const { data: tokenData, isError: tokenError } = useQuery({
+  const {
+    data: tokenData,
+    isError: tokenError,
+    isFetching: tokenFetching,
+    refetch: refetchToken,
+  } = useQuery({
     queryKey: ['user-token'],
-    queryFn: async () => {
-      const response = await api.get('/api/user/token')
-      return response.data as { token: string }
+    queryFn: async ({ signal }) => {
+      const response = await api.get<{ token: string }>('/api/user/token', {
+        signal,
+      })
+      return response.data
     },
     enabled: Boolean(auth.accessToken) && needsUserToken,
     staleTime: 5 * 60 * 1000,
+    retry: false,
+    meta: { showErrorInPage: true },
   })
 
   const userToken = tokenData?.token ?? ''
@@ -232,14 +246,22 @@ function SubscriptionPage() {
           aria-busy={subscriptionsPending}
           className='mt-8 grid gap-6 md:grid-cols-2 lg:grid-cols-3'
         >
-          {subscribeFiles.length === 0 ? (
-            <Card className='w-full border-dashed shadow-none sm:col-span-1 md:col-span-2 lg:col-span-3'>
+          {(subscriptionsPending ||
+            subscriptionsError ||
+            subscribeFiles.length === 0) && (
+            <Card className='col-span-full w-full border-dashed shadow-none'>
               <CardHeader>
-                {subscriptionsPending ? (
+                {subscriptionsPending && (
                   <CardTitle role='status'>正在加载订阅</CardTitle>
-                ) : subscriptionsError ? (
-                  <CardTitle role='alert'>订阅加载失败，请稍后再试。</CardTitle>
-                ) : (
+                )}
+                {subscriptionsError && (
+                  <CardTitle role='alert'>
+                    {subscribeFilesData
+                      ? '订阅列表更新失败，当前显示上次加载的结果。'
+                      : '订阅列表加载失败。'}
+                  </CardTitle>
+                )}
+                {!subscriptionsPending && !subscriptionsError && (
                   <>
                     <CardTitle>暂无可用订阅</CardTitle>
                     <CardDescription>
@@ -248,8 +270,40 @@ function SubscriptionPage() {
                   </>
                 )}
               </CardHeader>
+              {subscriptionsError && (
+                <CardFooter>
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    disabled={subscriptionsFetching}
+                    onClick={() => void refetchSubscriptions()}
+                  >
+                    重新加载订阅
+                  </Button>
+                </CardFooter>
+              )}
             </Card>
-          ) : null}
+          )}
+
+          {needsUserToken && tokenError && !userToken && (
+            <Card className='col-span-full w-full border-dashed shadow-none'>
+              <CardHeader>
+                <CardTitle role='alert'>有订阅链接加载失败。</CardTitle>
+              </CardHeader>
+              <CardFooter>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={tokenFetching}
+                  onClick={() => void refetchToken()}
+                >
+                  重试获取链接
+                </Button>
+              </CardFooter>
+            </Card>
+          )}
 
           {subscribeFiles.map((file) => {
             const Icon = ICON_MAP[file.name] ?? QrCode

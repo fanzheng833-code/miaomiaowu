@@ -74,6 +74,12 @@ const queryClient = new QueryClient({
   }),
 })
 
+useAuthStore.subscribe((state, previousState) => {
+  if (state.auth.accessToken !== previousState.auth.accessToken) {
+    queryClient.removeQueries()
+  }
+})
+
 // Create a new router instance
 const router = createRouter({
   routeTree,

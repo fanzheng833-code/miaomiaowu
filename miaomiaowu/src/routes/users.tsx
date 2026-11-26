@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, redirect } from '@tanstack/react-router'
 import { toast } from 'sonner'
@@ -23,6 +23,13 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
@@ -58,6 +65,8 @@ type UserRow = {
   subscription_fetch_until?: number
 }
 
+type AccountStatusFilter = 'all' | 'active' | 'disabled'
+
 type SubscriptionFetchPayload = {
   username: string
   enabled: boolean
@@ -80,8 +89,7 @@ type CreateState = {
 
 type SubscriptionManageState = {
   username: string
-  selectedIds: number[]
-  initialized: boolean
+  selectedIds: number[] | null
 }
 
 type SubscribeFile = {
@@ -169,6 +177,8 @@ const generatePassword = (length = 12) => {
 function UsersPage() {
   const { auth } = useAuthStore()
   const queryClient = useQueryClient()
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<AccountStatusFilter>('all')
   const [resetState, setResetState] = useState<ResetState | null>(null)
   const [deleteUsername, setDeleteUsername] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
@@ -196,33 +206,44 @@ function UsersPage() {
 
   const usersQuery = useQuery({
     queryKey: ['admin-users'],
-    queryFn: async () => {
-      const response = await api.get('/api/admin/users')
-      return response.data as { users: UserRow[] }
+    queryFn: async ({ signal }) => {
+      const response = await api.get<{ users: UserRow[] }>('/api/admin/users', {
+        signal,
+      })
+      return response.data
     },
     enabled: Boolean(isAdmin && auth.accessToken),
     staleTime: 30 * 1000,
+    meta: { showErrorInPage: true },
   })
 
   const subscriptionsQuery = useQuery({
     queryKey: ['admin-all-subscriptions'],
-    queryFn: async () => {
-      const response = await api.get('/api/subscriptions')
+    queryFn: async ({ signal }) => {
+      const response = await api.get<{ subscriptions: SubscribeFile[] }>(
+        '/api/subscriptions',
+        { signal }
+      )
       return response.data?.subscriptions ?? []
     },
     enabled: Boolean(isAdmin && auth.accessToken),
     staleTime: 60 * 1000,
+    meta: { showErrorInPage: true },
   })
 
   const userSubscriptionsQuery = useQuery({
     queryKey: ['user-subscriptions', subscriptionManageState?.username],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       if (!subscriptionManageState?.username) return { subscription_ids: [] }
-      const response = await api.get(`/api/admin/users/${subscriptionManageState.username}/subscriptions`)
-      return response.data as { subscription_ids: number[] }
+      const response = await api.get<{ subscription_ids: number[] }>(
+        `/api/admin/users/${subscriptionManageState.username}/subscriptions`,
+        { signal }
+      )
+      return response.data
     },
     enabled: Boolean(subscriptionManageState?.username && isAdmin && auth.accessToken),
     staleTime: 30 * 1000,
+    meta: { showErrorInPage: true },
   })
 
   const statusMutation = useMutation({
@@ -359,37 +380,50 @@ function UsersPage() {
     onError: handleServerError,
   })
 
+  const users = useMemo(() => usersQuery.data?.users ?? [], [usersQuery.data])
+  const searchTerm = search.trim().toLowerCase()
+  const hasFilter = Boolean(searchTerm) || statusFilter !== 'all'
+  const visibleUsers = useMemo(
+    () =>
+      users.filter((user) => {
+        if (statusFilter !== 'all' && user.is_active !== (statusFilter === 'active')) {
+          return false
+        }
+        return (
+          !searchTerm ||
+          [user.username, user.nickname, user.email, user.remark].some((value) =>
+            value?.toLowerCase().includes(searchTerm)
+          )
+        )
+      }),
+    [users, searchTerm, statusFilter]
+  )
+  const subscriptionEditorError =
+    subscriptionsQuery.isError || userSubscriptionsQuery.isError
+  const subscriptionEditorReady = Boolean(
+    subscriptionManageState &&
+      subscriptionsQuery.isSuccess &&
+      userSubscriptionsQuery.isSuccess &&
+      !userSubscriptionsQuery.isFetching
+  )
+  const savedSubscriptionIds = userSubscriptionsQuery.data?.subscription_ids ?? []
+  const selectedSubscriptionIds =
+    subscriptionManageState?.selectedIds ?? savedSubscriptionIds
+
   const toggleSubscriptionSelection = (id: number, nextState?: boolean) => {
+    if (!subscriptionEditorReady) return
     setSubscriptionManageState((prev) => {
       if (!prev) return prev
-      const alreadySelected = prev.selectedIds.includes(id)
-      const shouldSelect = typeof nextState === 'boolean' ? nextState : !alreadySelected
-      if (shouldSelect === alreadySelected) {
-        if (!prev.initialized) {
-          return { ...prev, initialized: true }
-        }
-        return prev
-      }
+      const previousIds = prev.selectedIds ?? savedSubscriptionIds
+      const alreadySelected = previousIds.includes(id)
+      const shouldSelect = nextState ?? !alreadySelected
+      if (shouldSelect === alreadySelected) return prev
       const selectedIds = shouldSelect
-        ? [...prev.selectedIds, id]
-        : prev.selectedIds.filter((existingId) => existingId !== id)
-      return { ...prev, selectedIds, initialized: true }
+        ? [...previousIds, id]
+        : previousIds.filter((existingId) => existingId !== id)
+      return { ...prev, selectedIds }
     })
   }
-
-  const users = useMemo(() => usersQuery.data?.users ?? [], [usersQuery.data])
-
-  useEffect(() => {
-    if (!subscriptionManageState || subscriptionManageState.initialized) return
-    if (!userSubscriptionsQuery.isSuccess) return
-    const serverIds = userSubscriptionsQuery.data?.subscription_ids ?? []
-    setSubscriptionManageState((prev) => {
-      if (!prev || prev.initialized || prev.username !== subscriptionManageState.username) {
-        return prev
-      }
-      return { ...prev, selectedIds: serverIds, initialized: true }
-    })
-  }, [subscriptionManageState, userSubscriptionsQuery.isSuccess, userSubscriptionsQuery.data])
 
   if (profileLoading) {
     return (
@@ -455,10 +489,89 @@ function UsersPage() {
             </div>
           </CardHeader>
           <CardContent>
-            <DataTable
-              data={users}
+            {usersQuery.isError && (
+              <div className='mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border px-3 py-2'>
+                <p role='alert' className='text-destructive text-sm'>
+                  {usersQuery.data
+                    ? '账号列表更新失败，当前显示上次加载的结果。'
+                    : '加载账号列表失败。'}
+                </p>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={usersQuery.isFetching}
+                  onClick={() => void usersQuery.refetch()}
+                >
+                  {usersQuery.isFetching ? '正在重试…' : '重试'}
+                </Button>
+              </div>
+            )}
+            {usersQuery.isLoading && (
+              <p role='status' className='text-muted-foreground py-8 text-center'>
+                正在加载账号列表…
+              </p>
+            )}
+            {users.length > 0 && (
+              <div className='mb-4 space-y-2'>
+                <div className='grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_10rem_auto]'>
+                  <div className='min-w-0 space-y-1.5'>
+                    <Label htmlFor='account-search'>搜索账号</Label>
+                    <Input
+                      id='account-search'
+                      type='search'
+                      placeholder='用户名、昵称、邮箱或备注'
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                    />
+                  </div>
+                  <div className='space-y-1.5'>
+                    <Label htmlFor='account-status-filter'>账号状态</Label>
+                    <Select
+                      value={statusFilter}
+                      onValueChange={(value) =>
+                        setStatusFilter(value as AccountStatusFilter)
+                      }
+                    >
+                      <SelectTrigger id='account-status-filter' className='w-full'>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value='all'>全部状态</SelectItem>
+                        <SelectItem value='active'>已启用</SelectItem>
+                        <SelectItem value='disabled'>已禁用</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    className='w-fit'
+                    disabled={!search && statusFilter === 'all'}
+                    onClick={() => {
+                      setSearch('')
+                      setStatusFilter('all')
+                    }}
+                  >
+                    重置筛选
+                  </Button>
+                </div>
+                {hasFilter && (
+                  <p role='status' className='text-muted-foreground text-sm'>
+                    显示 {visibleUsers.length} 个，共 {users.length} 个账号
+                  </p>
+                )}
+              </div>
+            )}
+            {usersQuery.data && <DataTable
+              data={visibleUsers}
               getRowKey={(user) => user.username}
-              emptyText='当前没有可显示的用户'
+              emptyText={
+                hasFilter && users.length > 0
+                  ? '没有符合筛选条件的账号'
+                  : '当前没有可显示的用户'
+              }
 
               columns={[
                 {
@@ -632,8 +745,7 @@ function UsersPage() {
                           onClick={() =>
                             setSubscriptionManageState({
                               username: user.username,
-                              selectedIds: [],
-                              initialized: false,
+                              selectedIds: null,
                             })
                           }
                         >
@@ -752,8 +864,7 @@ function UsersPage() {
                         onClick={() =>
                           setSubscriptionManageState({
                             username: user.username,
-                            selectedIds: [],
-                            initialized: false,
+                            selectedIds: null,
                           })
                         }
                       >
@@ -772,7 +883,7 @@ function UsersPage() {
                   )
                 }
               }}
-            />
+            />}
           </CardContent>
         </Card>
       </main>
@@ -851,7 +962,22 @@ function UsersPage() {
             </div>
             <div className='space-y-3'>
               <Label>分配订阅（可选）</Label>
-              {subscriptionsQuery.isLoading ? (
+              {subscriptionsQuery.isError ? (
+                <div className='flex flex-wrap items-center gap-2'>
+                  <p role='alert' className='text-destructive text-sm'>
+                    加载可用订阅失败。
+                  </p>
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    disabled={subscriptionsQuery.isFetching}
+                    onClick={() => void subscriptionsQuery.refetch()}
+                  >
+                    {subscriptionsQuery.isFetching ? '正在重试…' : '重试'}
+                  </Button>
+                </div>
+              ) : subscriptionsQuery.isLoading ? (
                 <div className='text-sm text-muted-foreground'>加载订阅列表...</div>
               ) : subscriptionsQuery.data && subscriptionsQuery.data.length > 0 ? (
                 <div className='space-y-2 max-h-60 overflow-y-auto border rounded-md p-3'>
@@ -954,20 +1080,7 @@ function UsersPage() {
 
       <Dialog
         open={Boolean(subscriptionManageState)}
-        onOpenChange={(open) => {
-          if (!open) {
-            setSubscriptionManageState(null)
-          } else if (subscriptionManageState && userSubscriptionsQuery.data) {
-            setSubscriptionManageState((prev) => {
-              if (!prev) return prev
-              return {
-                ...prev,
-                selectedIds: userSubscriptionsQuery.data?.subscription_ids ?? [],
-                initialized: true,
-              }
-            })
-          }
-        }}
+        onOpenChange={(open) => !open && setSubscriptionManageState(null)}
       >
         <DialogContent className='sm:max-w-lg'>
           <DialogHeader>
@@ -980,12 +1093,32 @@ function UsersPage() {
             </div>
             <div className='space-y-3'>
               <Label>可用订阅</Label>
-              {subscriptionsQuery.isLoading ? (
-                <div className='text-sm text-muted-foreground'>加载订阅列表...</div>
+              {subscriptionEditorError ? (
+                <div className='flex flex-wrap items-center gap-2'>
+                  <p role='alert' className='text-destructive text-sm'>
+                    加载订阅或已有分配失败。
+                  </p>
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    disabled={subscriptionsQuery.isFetching || userSubscriptionsQuery.isFetching}
+                    onClick={() => {
+                      if (subscriptionsQuery.isError) void subscriptionsQuery.refetch()
+                      if (userSubscriptionsQuery.isError) void userSubscriptionsQuery.refetch()
+                    }}
+                  >
+                    重试
+                  </Button>
+                </div>
+              ) : !subscriptionEditorReady ? (
+                <p role='status' className='text-muted-foreground text-sm'>
+                  正在加载订阅和已有分配…
+                </p>
               ) : subscriptionsQuery.data && subscriptionsQuery.data.length > 0 ? (
                 <div className='space-y-2 max-h-80 overflow-y-auto border rounded-md p-3'>
                   {subscriptionsQuery.data.map((sub) => {
-                    const isChecked = subscriptionManageState?.selectedIds.includes(sub.id) ?? false
+                    const isChecked = selectedSubscriptionIds.includes(sub.id)
                     return (
                       <div
                         key={sub.id}
@@ -1040,12 +1173,12 @@ function UsersPage() {
             </DialogClose>
             <Button
               type='button'
-              disabled={!subscriptionManageState || updateSubscriptionsMutation.isPending}
+              disabled={!subscriptionEditorReady || updateSubscriptionsMutation.isPending}
               onClick={() => {
-                if (subscriptionManageState) {
+                if (subscriptionEditorReady && subscriptionManageState) {
                   updateSubscriptionsMutation.mutate({
                     username: subscriptionManageState.username,
-                    subscription_ids: subscriptionManageState.selectedIds,
+                    subscription_ids: selectedSubscriptionIds,
                   })
                 }
               }}

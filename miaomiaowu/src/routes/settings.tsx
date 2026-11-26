@@ -7,6 +7,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
 import { api } from '@/lib/api'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { getCookie, setCookie } from '@/lib/cookies'
 import { handleServerError } from '@/lib/handle-server-error'
 import {
@@ -39,6 +40,7 @@ import {
   InputOTPSlot,
 } from '@/components/ui/input-otp'
 import { Label } from '@/components/ui/label'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 
 type ProfileFormValues = {
   username: string
@@ -67,6 +69,9 @@ function SettingsPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { auth } = useAuthStore()
+  const [resetTarget, setResetTarget] = useState<
+    'token' | 'short-links' | null
+  >(null)
 
   const { data: profile, isLoading: loadingProfile } = useQuery({
     queryKey: ['profile'],
@@ -75,14 +80,18 @@ function SettingsPage() {
     staleTime: 5 * 60 * 1000,
   })
 
-  const { data: tokenData, isLoading: loadingToken } = useQuery({
+  const tokenQuery = useQuery({
     queryKey: ['user-token'],
-    queryFn: async () => {
-      const response = await api.get('/api/user/token')
-      return response.data as { token: string }
+    queryFn: async ({ signal }) => {
+      const response = await api.get<{ token: string }>('/api/user/token', {
+        signal,
+      })
+      return response.data
     },
     enabled: Boolean(auth.accessToken),
     staleTime: 5 * 60 * 1000,
+    retry: false,
+    meta: { showErrorInPage: true },
   })
 
   const profileForm = useForm<ProfileFormValues>({
@@ -131,13 +140,15 @@ function SettingsPage() {
       const response = await api.post('/api/user/token')
       return response.data as { token: string }
     },
-    onSuccess: (payload) => {
+    onMutate: () => auth.accessToken,
+    onSuccess: async (payload, _, accessToken) => {
+      if (accessToken !== useAuthStore.getState().auth.accessToken) return
+      await queryClient.cancelQueries({ queryKey: ['user-token'] })
+      if (accessToken !== useAuthStore.getState().auth.accessToken) return
       queryClient.setQueryData(['user-token'], payload)
+      void queryClient.invalidateQueries({ queryKey: ['user-subscriptions'] })
+      setResetTarget(null)
       toast.success('Token 已重置')
-    },
-    onError: (error) => {
-      handleServerError(error)
-      toast.error('重置 Token 失败')
     },
   })
 
@@ -147,46 +158,49 @@ function SettingsPage() {
       return response.data as { message: string }
     },
     onSuccess: () => {
-      // Invalidate subscriptions to refresh short URLs
-      queryClient.invalidateQueries({ queryKey: ['user-subscriptions'] })
+      void queryClient.invalidateQueries({ queryKey: ['user-subscriptions'] })
+      setResetTarget(null)
       toast.success('所有订阅的短链接已重置')
     },
-    onError: (error) => {
-      handleServerError(error)
-      toast.error('重置短链接失败')
-    },
   })
 
-  const { data: shortCodeData } = useQuery({
+  const shortCodeQuery = useQuery({
     queryKey: ['user-custom-short-code'],
-    queryFn: async () => {
-      const response = await api.get('/api/user/custom-short-code')
-      return response.data as { custom_short_code: string }
+    queryFn: async ({ signal }) => {
+      const response = await api.get<{ custom_short_code: string }>(
+        '/api/user/custom-short-code',
+        { signal }
+      )
+      return response.data
     },
-    enabled: Boolean(auth.accessToken),
+    enabled: Boolean(auth.accessToken) && profile?.is_admin === true,
     staleTime: 5 * 60 * 1000,
+    retry: false,
+    meta: { showErrorInPage: true },
   })
 
-  const [shortCodeInput, setShortCodeInput] = useState('')
-  useEffect(() => {
-    if (shortCodeData?.custom_short_code !== undefined) {
-      setShortCodeInput(shortCodeData.custom_short_code)
-    }
-  }, [shortCodeData])
+  const [shortCodeDraft, setShortCodeDraft] = useState<string | null>(null)
+  const shortCodeInput =
+    shortCodeDraft ?? shortCodeQuery.data?.custom_short_code ?? ''
 
   const updateShortCodeMutation = useMutation({
     mutationFn: async (code: string) => {
       const response = await api.post('/api/user/custom-short-code', {
-        custom_short_code: code.trim(),
+        custom_short_code: code,
       })
       return response.data
     },
-    onSuccess: () => {
+    onMutate: () => auth.accessToken,
+    onSuccess: async (_, code, accessToken) => {
+      if (accessToken !== useAuthStore.getState().auth.accessToken) return
+      await queryClient.cancelQueries({ queryKey: ['user-custom-short-code'] })
+      if (accessToken !== useAuthStore.getState().auth.accessToken) return
+      queryClient.setQueryData(['user-custom-short-code'], {
+        custom_short_code: code,
+      })
+      setShortCodeDraft(null)
+      void queryClient.invalidateQueries({ queryKey: ['user-subscriptions'] })
       toast.success('自定义连接已更新')
-      queryClient.invalidateQueries({ queryKey: ['user-custom-short-code'] })
-    },
-    onError: (error) => {
-      handleServerError(error)
     },
   })
 
@@ -254,7 +268,7 @@ function SettingsPage() {
     ? profile.avatar_url.trim()
     : fallbackAvatar
   const avatarFallback = displayName.slice(0, 2) || '用户'
-  const tokenValue = tokenData?.token ?? ''
+  const tokenValue = tokenQuery.data?.token ?? ''
 
   return (
     <div className='bg-background min-h-svh'>
@@ -387,32 +401,64 @@ function SettingsPage() {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle>自定义订阅连接</CardTitle>
-                <CardDescription>
-                  设置后短链接中将使用自定义连接替代系统随机生成的部分。只允许字母和数字，留空则使用系统默认。
-                </CardDescription>
-              </CardHeader>
-              <CardContent className='space-y-3'>
-                <div className='space-y-2'>
-                  <Label htmlFor='custom_short_code'>自定义连接</Label>
-                  <Input
-                    id='custom_short_code'
-                    placeholder='字母和数字'
-                    value={shortCodeInput}
-                    onChange={(e) => setShortCodeInput(e.target.value)}
-                  />
-                </div>
-                <Button
-                  className='w-full'
-                  disabled={updateShortCodeMutation.isPending}
-                  onClick={() => updateShortCodeMutation.mutate(shortCodeInput)}
-                >
-                  {updateShortCodeMutation.isPending ? '保存中…' : '保存'}
-                </Button>
-              </CardContent>
-            </Card>
+            {profile?.is_admin && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>自定义订阅连接</CardTitle>
+                  <CardDescription>
+                    设置后短链接中将使用自定义连接替代系统随机生成的部分。只允许字母和数字，留空则使用系统默认。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className='space-y-3'>
+                  {shortCodeQuery.isLoading && (
+                    <p role='status' className='text-muted-foreground text-sm'>
+                      正在读取自定义连接…
+                    </p>
+                  )}
+                  {shortCodeQuery.isError && (
+                    <div className='flex flex-wrap items-center gap-2'>
+                      <p role='alert' className='text-destructive text-sm'>
+                        读取自定义连接失败。
+                      </p>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        disabled={shortCodeQuery.isFetching}
+                        onClick={() => void shortCodeQuery.refetch()}
+                      >
+                        {shortCodeQuery.isFetching
+                          ? '正在重试…'
+                          : '重试读取自定义连接'}
+                      </Button>
+                    </div>
+                  )}
+                  <div className='space-y-2'>
+                    <Label htmlFor='custom_short_code'>自定义连接</Label>
+                    <Input
+                      id='custom_short_code'
+                      placeholder='字母和数字'
+                      value={shortCodeInput}
+                      disabled={
+                        !shortCodeQuery.data ||
+                        updateShortCodeMutation.isPending
+                      }
+                      onChange={(e) => setShortCodeDraft(e.target.value)}
+                    />
+                  </div>
+                  <Button
+                    className='w-full'
+                    disabled={
+                      !shortCodeQuery.data || updateShortCodeMutation.isPending
+                    }
+                    onClick={() =>
+                      updateShortCodeMutation.mutate(shortCodeInput.trim())
+                    }
+                  >
+                    {updateShortCodeMutation.isPending ? '保存中…' : '保存'}
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
           </div>
 
           {/* 右侧：修改密码和订阅Token */}
@@ -483,60 +529,99 @@ function SettingsPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent className='space-y-4'>
-                <div className='bg-muted/40 rounded-md border p-3 font-mono text-xs break-all shadow-inner sm:text-sm'>
-                  {loadingToken ? '加载中…' : tokenValue || '尚未生成'}
-                </div>
+                {tokenQuery.isError && (
+                  <div className='flex flex-wrap items-center gap-2'>
+                    <p role='alert' className='text-destructive text-sm'>
+                      读取订阅 Token 失败。
+                    </p>
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      disabled={tokenQuery.isFetching}
+                      onClick={() => void tokenQuery.refetch()}
+                    >
+                      {tokenQuery.isFetching ? '正在重试…' : '重试读取 Token'}
+                    </Button>
+                  </div>
+                )}
+                {(tokenValue || !tokenQuery.isError) && (
+                  <div className='bg-muted/40 rounded-md border p-3 font-mono text-xs break-all shadow-inner sm:text-sm'>
+                    {tokenQuery.isLoading
+                      ? '加载中…'
+                      : tokenValue || '尚未生成'}
+                  </div>
+                )}
                 <div className='flex flex-wrap gap-2'>
                   <Button
                     size='sm'
                     variant='secondary'
                     disabled={!tokenValue || resetTokenMutation.isPending}
                     onClick={async () => {
-                      if (!tokenValue) return
-                      if (
-                        typeof navigator !== 'undefined' &&
-                        navigator.clipboard?.writeText
-                      ) {
-                        try {
-                          await navigator.clipboard.writeText(tokenValue)
-                          toast.success('Token 已复制')
-                          return
-                        } catch (error) {
-                          console.error('copy token failed', error)
-                        }
+                      if (await copyTextToClipboard(tokenValue)) {
+                        toast.success('Token 已复制')
+                      } else {
+                        toast.error('复制失败，请手动复制')
                       }
-                      toast.error('复制失败(需要https)，请手动复制')
                     }}
                   >
                     复制 Token
                   </Button>
-                  <Button
-                    size='sm'
-                    variant='outline'
-                    disabled={resetTokenMutation.isPending}
-                    onClick={() => resetTokenMutation.mutate()}
-                  >
-                    {resetTokenMutation.isPending ? '重置中…' : '重置 Token'}
-                  </Button>
+                  <ConfirmDialog
+                    open={resetTarget === 'token'}
+                    onOpenChange={(open) => {
+                      if (!resetTokenMutation.isPending)
+                        setResetTarget(open ? 'token' : null)
+                    }}
+                    trigger={
+                      <Button size='sm' variant='outline'>
+                        重置 Token
+                      </Button>
+                    }
+                    title='重置订阅 Token'
+                    desc='使用旧 Token 的订阅地址将失效。系统还会更新自动生成的个人短码，请到订阅链接页获取新地址。'
+                    cancelBtnText='取消'
+                    confirmText={
+                      resetTokenMutation.isPending
+                        ? '重置中…'
+                        : '确认重置 Token'
+                    }
+                    destructive
+                    isLoading={resetTokenMutation.isPending}
+                    handleConfirm={() => resetTokenMutation.mutate()}
+                  />
                 </div>
 
-                <div className='space-y-2 border-t pt-4'>
-                  <Label>订阅短链接</Label>
-                  <p className='text-muted-foreground text-xs'>
-                    重置所有订阅的短链接。短链接在订阅链接页面显示。
-                  </p>
-                  <Button
-                    size='sm'
-                    variant='outline'
-                    disabled={resetShortLinkMutation.isPending}
-                    onClick={() => resetShortLinkMutation.mutate()}
-                    className='w-full'
-                  >
-                    {resetShortLinkMutation.isPending
-                      ? '重置中…'
-                      : '重置所有订阅短链接'}
-                  </Button>
-                </div>
+                {profile?.is_admin && (
+                  <div className='space-y-2 border-t pt-4'>
+                    <Label>订阅短链接</Label>
+                    <p className='text-muted-foreground text-xs'>
+                      重置全站订阅文件的系统短码。新地址可在订阅链接页获取。
+                    </p>
+                    <ConfirmDialog
+                      open={resetTarget === 'short-links'}
+                      onOpenChange={(open) => {
+                        if (!resetShortLinkMutation.isPending)
+                          setResetTarget(open ? 'short-links' : null)
+                      }}
+                      trigger={
+                        <Button size='sm' variant='outline' className='w-full'>
+                          重置所有订阅短链接
+                        </Button>
+                      }
+                      title='重置所有订阅短链接'
+                      desc='这会影响全站订阅。使用旧文件短码的客户端需要重新导入链接。'
+                      cancelBtnText='取消'
+                      confirmText={
+                        resetShortLinkMutation.isPending
+                          ? '重置中…'
+                          : '确认重置全站短链接'
+                      }
+                      destructive
+                      isLoading={resetShortLinkMutation.isPending}
+                      handleConfirm={() => resetShortLinkMutation.mutate()}
+                    />
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -790,12 +875,9 @@ function TwoFactorCard() {
                 <Button
                   variant='outline'
                   onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(
-                        recoveryCodes.join('\n')
-                      )
+                    if (await copyTextToClipboard(recoveryCodes.join('\n'))) {
                       toast.success('恢复码已复制')
-                    } catch {
+                    } else {
                       toast.error('复制失败，请手动复制')
                     }
                   }}

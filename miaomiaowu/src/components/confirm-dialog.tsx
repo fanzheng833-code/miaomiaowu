@@ -7,6 +7,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 
@@ -23,6 +24,7 @@ type ConfirmDialogProps = {
   isLoading?: boolean
   className?: string
   children?: React.ReactNode
+  trigger?: React.ReactElement
 }
 
 export function ConfirmDialog(props: ConfirmDialogProps) {
@@ -30,6 +32,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
     title,
     desc,
     children,
+    trigger,
     className,
     confirmText,
     cancelBtnText,
@@ -41,6 +44,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
   } = props
   return (
     <AlertDialog {...actions}>
+      {trigger && <AlertDialogTrigger asChild>{trigger}</AlertDialogTrigger>}
       <AlertDialogContent className={cn(className && className)}>
         <AlertDialogHeader className='text-start'>
           <AlertDialogTitle>{title}</AlertDialogTitle>
