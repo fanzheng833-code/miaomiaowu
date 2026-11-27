@@ -9,7 +9,11 @@ export interface ProfileResponse {
   is_admin: boolean
 }
 
-export const profileQueryFn = async (): Promise<ProfileResponse> => {
-  const response = await api.get('/api/user/profile')
-  return response.data as ProfileResponse
+export const profileQueryFn = async ({
+  signal,
+}: { signal?: AbortSignal } = {}): Promise<ProfileResponse> => {
+  const response = await api.get<ProfileResponse>('/api/user/profile', {
+    signal,
+  })
+  return response.data
 }

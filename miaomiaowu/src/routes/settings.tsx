@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState, type FormEvent } from 'react'
 import { useForm } from 'react-hook-form'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
@@ -16,7 +16,7 @@ import {
   passkeySupported,
   registerPasskey,
 } from '@/lib/passkey'
-import { profileQueryFn } from '@/lib/profile'
+import { profileQueryFn, type ProfileResponse } from '@/lib/profile'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import {
@@ -73,12 +73,40 @@ function SettingsPage() {
     'token' | 'short-links' | null
   >(null)
 
-  const { data: profile, isLoading: loadingProfile } = useQuery({
+  const profileQuery = useQuery({
     queryKey: ['profile'],
     queryFn: profileQueryFn,
     enabled: Boolean(auth.accessToken),
     staleTime: 5 * 60 * 1000,
+    retry: false,
+    // Login initializes the menu profile without the current avatar URL.
+    refetchOnMount: (query) =>
+      typeof query.state.data?.avatar_url === 'string' ? true : 'always',
   })
+  const profile = profileQuery.data
+  const profileReady = typeof profile?.avatar_url === 'string'
+  const [profileDraft, setProfileDraft] = useState<Partial<ProfileFormValues>>(
+    {}
+  )
+  const profileValues = {
+    username: profile?.username ?? '',
+    nickname: profile?.nickname ?? '',
+    email: profile?.email ?? '',
+    avatar_url: profile?.avatar_url ?? '',
+    ...profileDraft,
+  }
+
+  const editProfile = (field: keyof ProfileFormValues, value: string) => {
+    setProfileDraft((draft) => {
+      const next = { ...draft }
+      if (value === profile?.[field]) {
+        delete next[field]
+      } else {
+        next[field] = value
+      }
+      return next
+    })
+  }
 
   const tokenQuery = useQuery({
     queryKey: ['user-token'],
@@ -94,26 +122,6 @@ function SettingsPage() {
     meta: { showErrorInPage: true },
   })
 
-  const profileForm = useForm<ProfileFormValues>({
-    defaultValues: {
-      username: '',
-      nickname: '',
-      email: '',
-      avatar_url: '',
-    },
-  })
-
-  useEffect(() => {
-    if (profile) {
-      profileForm.reset({
-        username: profile.username,
-        nickname: profile.nickname,
-        email: profile.email,
-        avatar_url: profile.avatar_url,
-      })
-    }
-  }, [profile, profileForm])
-
   const updateProfileMutation = useMutation({
     mutationFn: async (values: ProfileFormValues) => {
       const payload = {
@@ -122,16 +130,20 @@ function SettingsPage() {
         email: values.email.trim(),
         avatar_url: values.avatar_url.trim(),
       }
-      const response = await api.put('/api/user/settings', payload)
-      return response.data as { profile: ProfileFormValues }
+      const response = await api.put<{ profile: ProfileResponse }>(
+        '/api/user/settings',
+        payload
+      )
+      return response.data.profile
     },
-    onSuccess: () => {
+    onMutate: () => auth.accessToken,
+    onSuccess: async (savedProfile, _, accessToken) => {
+      if (accessToken !== useAuthStore.getState().auth.accessToken) return
+      await queryClient.cancelQueries({ queryKey: ['profile'], exact: true })
+      if (accessToken !== useAuthStore.getState().auth.accessToken) return
+      queryClient.setQueryData(['profile'], savedProfile)
+      setProfileDraft({})
       toast.success('个人信息已更新')
-      queryClient.invalidateQueries({ queryKey: ['profile'] })
-    },
-    onError: (error) => {
-      handleServerError(error)
-      toast.error('更新个人信息失败')
     },
   })
 
@@ -232,19 +244,27 @@ function SettingsPage() {
     },
   })
 
-  const submitProfile = profileForm.handleSubmit((values) => {
-    if (!values.username.trim()) {
+  const profileEditingDisabled =
+    !profileReady || updateProfileMutation.isPending
+  const canSaveProfile =
+    !profileEditingDisabled &&
+    !profileQuery.isFetching &&
+    !profileQuery.isError &&
+    Object.keys(profileDraft).length > 0
+
+  const submitProfile = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!canSaveProfile || !profile) return
+    if (!profileValues.username.trim()) {
       toast.error('用户名不能为空')
       return
     }
 
-    if (profile?.is_admin && values.username.trim() !== profile.username) {
-      toast.error('管理员用户名不可修改')
-      return
-    }
-
-    updateProfileMutation.mutate(values)
-  })
+    updateProfileMutation.mutate({
+      ...profileValues,
+      username: profile.is_admin ? profile.username : profileValues.username,
+    })
+  }
 
   const submitPassword = passwordForm.handleSubmit((values) => {
     if (values.new_password.trim().length < 8) {
@@ -288,6 +308,33 @@ function SettingsPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
+                {!profileReady && profileQuery.isFetching && (
+                  <p
+                    role='status'
+                    className='text-muted-foreground mb-4 text-sm'
+                  >
+                    正在读取个人资料…
+                  </p>
+                )}
+                {(profileQuery.isError ||
+                  (!profileReady && !profileQuery.isFetching)) && (
+                  <div className='mb-4 flex flex-wrap items-center gap-2'>
+                    <p role='alert' className='text-destructive text-sm'>
+                      {profileReady
+                        ? '资料刷新失败，已保留你的修改。请重试读取后再保存。'
+                        : '读取个人资料失败。'}
+                    </p>
+                    <Button
+                      type='button'
+                      size='sm'
+                      variant='outline'
+                      disabled={profileQuery.isFetching}
+                      onClick={() => void profileQuery.refetch()}
+                    >
+                      {profileQuery.isFetching ? '正在重试…' : '重试读取资料'}
+                    </Button>
+                  </div>
+                )}
                 <form className='space-y-5' onSubmit={submitProfile}>
                   <div className='flex items-center gap-4'>
                     <Avatar className='size-12'>
@@ -306,8 +353,11 @@ function SettingsPage() {
                     <Input
                       id='username'
                       placeholder='用于登录的用户名'
-                      disabled={loadingProfile || profile?.is_admin}
-                      {...profileForm.register('username', { required: true })}
+                      disabled={profileEditingDisabled || profile?.is_admin}
+                      value={profileValues.username}
+                      onChange={(event) =>
+                        editProfile('username', event.target.value)
+                      }
                     />
                     {profile?.is_admin ? (
                       <p className='text-muted-foreground text-xs'>
@@ -321,8 +371,11 @@ function SettingsPage() {
                     <Input
                       id='nickname'
                       placeholder='用于展示的昵称'
-                      disabled={loadingProfile}
-                      {...profileForm.register('nickname')}
+                      disabled={profileEditingDisabled}
+                      value={profileValues.nickname}
+                      onChange={(event) =>
+                        editProfile('nickname', event.target.value)
+                      }
                     />
                   </div>
 
@@ -332,8 +385,11 @@ function SettingsPage() {
                       id='email'
                       type='email'
                       placeholder='用于接收通知 (可选)'
-                      disabled={loadingProfile}
-                      {...profileForm.register('email')}
+                      disabled={profileEditingDisabled}
+                      value={profileValues.email}
+                      onChange={(event) =>
+                        editProfile('email', event.target.value)
+                      }
                     />
                   </div>
 
@@ -342,15 +398,23 @@ function SettingsPage() {
                     <Input
                       id='avatar_url'
                       placeholder='https://example.com/avatar.png'
-                      disabled={loadingProfile}
-                      {...profileForm.register('avatar_url')}
+                      disabled={profileEditingDisabled}
+                      value={profileValues.avatar_url}
+                      onChange={(event) =>
+                        editProfile('avatar_url', event.target.value)
+                      }
                     />
                   </div>
 
+                  {updateProfileMutation.isError && (
+                    <p role='alert' className='text-destructive text-sm'>
+                      保存个人资料失败，已保留你的修改。
+                    </p>
+                  )}
                   <Button
                     type='submit'
                     className='w-full'
-                    disabled={updateProfileMutation.isPending}
+                    disabled={!canSaveProfile}
                   >
                     {updateProfileMutation.isPending ? '保存中…' : '保存变更'}
                   </Button>
@@ -625,7 +689,7 @@ function SettingsPage() {
               </CardContent>
             </Card>
 
-            <TwoFactorCard />
+            <TwoFactorCard username={profile?.username} />
             <PasskeyCard />
           </div>
         </div>
@@ -634,13 +698,8 @@ function SettingsPage() {
   )
 }
 
-function TwoFactorCard() {
+function TwoFactorCard({ username }: { username?: string }) {
   const queryClient = useQueryClient()
-  const { data: profile } = useQuery({
-    queryKey: ['profile'],
-    queryFn: profileQueryFn,
-    staleTime: 5 * 60 * 1000,
-  })
   const [setupOpen, setSetupOpen] = useState(false)
   const [disableOpen, setDisableOpen] = useState(false)
   const [setupStep, setSetupStep] = useState<
@@ -892,7 +951,7 @@ function TwoFactorCard() {
                     const url = URL.createObjectURL(blob)
                     const a = document.createElement('a')
                     a.href = url
-                    a.download = `妙妙屋-${profile?.username || 'user'}.txt`
+                    a.download = `妙妙屋-${username || 'user'}.txt`
                     a.click()
                     URL.revokeObjectURL(url)
                   }}

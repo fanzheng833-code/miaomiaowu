@@ -74,15 +74,21 @@ interface NotifyConfig {
 
 interface UserConfig {
   force_sync_external: boolean
-  match_rule: string
-  sync_scope: string
+  match_rule:
+    | 'node_name'
+    | 'server_port'
+    | 'type_server_port'
+    | 'type_server_port_cred'
+  sync_scope: 'saved_only' | 'all'
   keep_node_name: boolean
   cache_expire_minutes: number
   sync_traffic: boolean
   enable_probe_binding: boolean
+  custom_rules_enabled: boolean
   enable_short_link: boolean
-  template_version: string
+  template_version: 'v1' | 'v2' | 'v3'
   enable_proxy_provider: boolean
+  node_order: number[] | null
   proxy_groups_source_url: string
   client_compatibility_mode: boolean
   silent_mode: boolean
@@ -110,6 +116,48 @@ interface UserConfig {
   block_unknown_subscription_ua: boolean
 }
 
+const USER_CONFIG_KEY = ['user-config'] as const
+
+const DEFAULT_USER_CONFIG: UserConfig = {
+  force_sync_external: false,
+  match_rule: 'node_name',
+  sync_scope: 'saved_only',
+  keep_node_name: true,
+  cache_expire_minutes: 0,
+  sync_traffic: false,
+  enable_probe_binding: false,
+  custom_rules_enabled: true,
+  enable_short_link: false,
+  template_version: 'v2',
+  enable_proxy_provider: false,
+  node_order: null,
+  proxy_groups_source_url: '',
+  client_compatibility_mode: false,
+  silent_mode: false,
+  silent_mode_timeout: 15,
+  node_name_filter: '剩余|流量|到期|订阅|时间|重置',
+  append_sub_info: false,
+  enable_sub_info_nodes: false,
+  sub_info_v2ray_only: false,
+  sub_info_expire_prefix: '📅过期时间',
+  sub_info_traffic_prefix: '⌛剩余流量',
+  enable_sub_traffic_header: true,
+  enable_override_scripts: false,
+  subscription_output_format: 'yaml',
+  login_rate_max_attempts: 5,
+  login_rate_window: 60,
+  login_rate_lock_duration: 60,
+  brute_force_enabled: true,
+  brute_force_max_failures: 5,
+  brute_force_window: 1440,
+  brute_force_block_duration: 1440,
+  sub_rate_limit_enabled: true,
+  sub_rate_limit_max: 30,
+  sub_rate_limit_window: 120,
+  skip_local_ip: true,
+  block_unknown_subscription_ua: false,
+}
+
 export const Route = createFileRoute('/system-settings')({
   beforeLoad: () => {
     const token = useAuthStore.getState().auth.accessToken
@@ -124,49 +172,7 @@ function SystemSettingsPage() {
   const queryClient = useQueryClient()
   const { auth } = useAuthStore()
   const [settingsTab, setSettingsTab] = useState<string>('sub')
-  const [forceSyncExternal, setForceSyncExternal] = useState(false)
-  const [matchRule, setMatchRule] = useState<
-    'node_name' | 'server_port' | 'type_server_port' | 'type_server_port_cred'
-  >('node_name')
-  const [syncScope, setSyncScope] = useState<'saved_only' | 'all'>('saved_only')
-  const [keepNodeName, setKeepNodeName] = useState(true)
-  const [cacheExpireMinutes, setCacheExpireMinutes] = useState(0)
-  const [syncTraffic, setSyncTraffic] = useState(false)
-  const [enableProbeBinding, setEnableProbeBinding] = useState(false)
-  const [enableShortLink, setEnableShortLink] = useState(false)
-  const [templateVersion, setTemplateVersion] = useState<'v1' | 'v2' | 'v3'>(
-    'v2'
-  )
-  const [enableProxyProvider, setEnableProxyProvider] = useState(false)
-  const [proxyGroupsSourceUrl, setProxyGroupsSourceUrl] = useState('')
-  const [clientCompatibilityMode, setClientCompatibilityMode] = useState(false)
-  const [silentMode, setSilentMode] = useState(false)
-  const [silentModeTimeout, setSilentModeTimeout] = useState(15)
-  const [nodeNameFilter, setNodeNameFilter] =
-    useState('剩余|流量|到期|订阅|时间|重置')
-  const [appendSubInfo, setAppendSubInfo] = useState(false)
-  const [enableSubInfoNodes, setEnableSubInfoNodes] = useState(false)
-  const [subInfoV2RayOnly, setSubInfoV2RayOnly] = useState(false)
-  const [subInfoExpirePrefix, setSubInfoExpirePrefix] = useState('📅过期时间')
-  const [subInfoTrafficPrefix, setSubInfoTrafficPrefix] = useState('⌛剩余流量')
-  const [enableSubTrafficHeader, setEnableSubTrafficHeader] = useState(true)
-  const [enableOverrideScripts, setEnableOverrideScripts] = useState(false)
-  const [subscriptionOutputFormat, setSubscriptionOutputFormat] =
-    useState('yaml')
-
-  // 安全配置
-  const [loginRateMaxAttempts, setLoginRateMaxAttempts] = useState(5)
-  const [loginRateWindow, setLoginRateWindow] = useState(60)
-  const [loginRateLockDuration, setLoginRateLockDuration] = useState(60)
-  const [bruteForceEnabled, setBruteForceEnabled] = useState(true)
-  const [bruteForceMaxFailures, setBruteForceMaxFailures] = useState(5)
-  const [bruteForceWindow, setBruteForceWindow] = useState(1440)
-  const [bruteForceBlockDuration, setBruteForceBlockDuration] = useState(1440)
-  const [subRateLimitEnabled, setSubRateLimitEnabled] = useState(true)
-  const [subRateLimitMax, setSubRateLimitMax] = useState(30)
-  const [subRateLimitWindow, setSubRateLimitWindow] = useState(120)
-  const [skipLocalIP, setSkipLocalIP] = useState(true)
-  const [blockUnknownSubUA, setBlockUnknownSubUA] = useState(false)
+  const [configDraft, setConfigDraft] = useState<Partial<UserConfig>>({})
 
   // Notification config state
   const [notifyConfig, setNotifyConfig] = useState<NotifyConfig>({
@@ -188,15 +194,18 @@ function SystemSettingsPage() {
   const syncProxyGroupsMutation = useSyncProxyGroupCategories()
 
   // Notify config query
-  const { data: notifyConfigData } = useQuery({
+  const notifyConfigQuery = useQuery({
     queryKey: ['notify-config'],
-    queryFn: async () => {
-      const response = await api.get('/api/admin/notify-config')
-      return response.data as NotifyConfig
+    queryFn: async ({ signal }) => {
+      const { data } = await api.get<NotifyConfig>('/api/admin/notify-config', { signal })
+      return data
     },
     enabled: Boolean(auth.accessToken),
     staleTime: 5 * 60 * 1000,
+    retry: false,
+    meta: { showErrorInPage: true },
   })
+  const notifyConfigData = notifyConfigQuery.data
 
   useEffect(() => {
     if (notifyConfigData) {
@@ -232,179 +241,145 @@ function SystemSettingsPage() {
     },
   })
 
+  const notifyControlsDisabled =
+    !notifyConfigData || notifyConfigQuery.isError || updateNotifyMutation.isPending
+
   const saveNotifyConfig = (updates: Partial<NotifyConfig>) => {
+    if (notifyControlsDisabled) return
     const newConfig = { ...notifyConfig, ...updates }
     setNotifyConfig(newConfig)
     updateNotifyMutation.mutate(newConfig)
   }
 
-  const { data: userConfig, isLoading: loadingConfig } = useQuery({
-    queryKey: ['user-config'],
-    queryFn: async () => {
-      const response = await api.get('/api/user/config')
-      return response.data as UserConfig
+  const userConfigQuery = useQuery({
+    queryKey: USER_CONFIG_KEY,
+    queryFn: async ({ signal }) => {
+      const { data } = await api.get<UserConfig>('/api/user/config', { signal })
+      if (typeof data?.force_sync_external !== 'boolean') {
+        throw new Error('系统配置内容无效')
+      }
+      return data
     },
     enabled: Boolean(auth.accessToken),
     staleTime: 5 * 60 * 1000,
+    retry: false,
+    meta: { showErrorInPage: true },
   })
+  const userConfig = userConfigQuery.data
+  const {
+    force_sync_external: forceSyncExternal,
+    match_rule: matchRule,
+    sync_scope: syncScope,
+    keep_node_name: keepNodeName,
+    cache_expire_minutes: cacheExpireMinutes,
+    sync_traffic: syncTraffic,
+    enable_probe_binding: enableProbeBinding,
+    enable_short_link: enableShortLink,
+    template_version: templateVersion,
+    enable_proxy_provider: enableProxyProvider,
+    proxy_groups_source_url: proxyGroupsSourceUrl,
+    client_compatibility_mode: clientCompatibilityMode,
+    silent_mode: silentMode,
+    silent_mode_timeout: silentModeTimeout,
+    node_name_filter: nodeNameFilter,
+    append_sub_info: appendSubInfo,
+    enable_sub_info_nodes: enableSubInfoNodes,
+    sub_info_v2ray_only: subInfoV2RayOnly,
+    sub_info_expire_prefix: subInfoExpirePrefix,
+    sub_info_traffic_prefix: subInfoTrafficPrefix,
+    enable_sub_traffic_header: enableSubTrafficHeader,
+    enable_override_scripts: enableOverrideScripts,
+    subscription_output_format: subscriptionOutputFormat,
+    login_rate_max_attempts: loginRateMaxAttempts,
+    login_rate_window: loginRateWindow,
+    login_rate_lock_duration: loginRateLockDuration,
+    brute_force_enabled: bruteForceEnabled,
+    brute_force_max_failures: bruteForceMaxFailures,
+    brute_force_window: bruteForceWindow,
+    brute_force_block_duration: bruteForceBlockDuration,
+    sub_rate_limit_enabled: subRateLimitEnabled,
+    sub_rate_limit_max: subRateLimitMax,
+    sub_rate_limit_window: subRateLimitWindow,
+    skip_local_ip: skipLocalIP,
+    block_unknown_subscription_ua: blockUnknownSubUA,
+  } = { ...DEFAULT_USER_CONFIG, ...userConfig, ...configDraft }
 
-  useEffect(() => {
-    if (userConfig) {
-      setForceSyncExternal(userConfig.force_sync_external)
-      setMatchRule(
-        userConfig.match_rule as
-          | 'node_name'
-          | 'server_port'
-          | 'type_server_port'
-          | 'type_server_port_cred'
-      )
-      setSyncScope(
-        (userConfig.sync_scope as 'saved_only' | 'all') || 'saved_only'
-      )
-      setKeepNodeName(userConfig.keep_node_name !== false) // 默认为 true
-      setCacheExpireMinutes(userConfig.cache_expire_minutes)
-      setSyncTraffic(userConfig.sync_traffic)
-      setEnableProbeBinding(userConfig.enable_probe_binding || false)
-      setEnableShortLink(userConfig.enable_short_link || false)
-      setTemplateVersion(
-        (userConfig.template_version as 'v1' | 'v2' | 'v3') || 'v2'
-      )
-      setEnableProxyProvider(userConfig.enable_proxy_provider || false)
-      setProxyGroupsSourceUrl(userConfig.proxy_groups_source_url || '')
-      setClientCompatibilityMode(userConfig.client_compatibility_mode || false)
-      setSilentMode(userConfig.silent_mode || false)
-      setSilentModeTimeout(userConfig.silent_mode_timeout || 15)
-      setNodeNameFilter(
-        userConfig.node_name_filter ?? '剩余|流量|到期|订阅|时间|重置'
-      )
-      setAppendSubInfo(userConfig.append_sub_info || false)
-      setEnableSubInfoNodes(userConfig.enable_sub_info_nodes || false)
-      setSubInfoV2RayOnly(userConfig.sub_info_v2ray_only || false)
-      setSubInfoExpirePrefix(userConfig.sub_info_expire_prefix || '📅过期时间')
-      setSubInfoTrafficPrefix(
-        userConfig.sub_info_traffic_prefix || '⌛剩余流量'
-      )
-      setEnableSubTrafficHeader(userConfig.enable_sub_traffic_header !== false)
-      setEnableOverrideScripts(userConfig.enable_override_scripts || false)
-      setSubscriptionOutputFormat(
-        userConfig.subscription_output_format || 'yaml'
-      )
-      setLoginRateMaxAttempts(userConfig.login_rate_max_attempts || 5)
-      setLoginRateWindow(userConfig.login_rate_window || 60)
-      setLoginRateLockDuration(userConfig.login_rate_lock_duration || 60)
-      setBruteForceEnabled(userConfig.brute_force_enabled !== false)
-      setBruteForceMaxFailures(userConfig.brute_force_max_failures || 5)
-      setBruteForceWindow(userConfig.brute_force_window || 1440)
-      setBruteForceBlockDuration(userConfig.brute_force_block_duration || 1440)
-      setSubRateLimitEnabled(userConfig.sub_rate_limit_enabled !== false)
-      setSubRateLimitMax(userConfig.sub_rate_limit_max || 30)
-      setSubRateLimitWindow(userConfig.sub_rate_limit_window || 120)
-      setSkipLocalIP(userConfig.skip_local_ip !== false)
-      setBlockUnknownSubUA(userConfig.block_unknown_subscription_ua === true)
-    }
-  }, [userConfig])
+  const clearSavedDraft = (updates: Partial<UserConfig>) => {
+    setConfigDraft((draft) => {
+      const next = { ...draft }
+      for (const key of Object.keys(updates) as (keyof UserConfig)[]) {
+        if (next[key] === updates[key]) delete next[key]
+      }
+      return next
+    })
+  }
 
   const updateConfigMutation = useMutation({
-    mutationFn: async (data: UserConfig) => {
-      await api.put('/api/user/config', data)
-    },
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['user-config'] })
-      // 当短链接开关状态改变时，刷新订阅列表以更新链接显示
-      if (variables.enable_short_link !== enableShortLink) {
-        queryClient.invalidateQueries({ queryKey: ['user-subscriptions'] })
+    scope: { id: 'user-config' },
+    mutationFn: async ({
+      updates,
+      accessToken,
+    }: {
+      updates: Partial<UserConfig>
+      accessToken: string
+    }) => {
+      await queryClient.cancelQueries({ queryKey: USER_CONFIG_KEY, exact: true })
+      const snapshot = queryClient.getQueryData<UserConfig>(USER_CONFIG_KEY)
+      if (!snapshot || useAuthStore.getState().auth.accessToken !== accessToken) {
+        throw new Error('请重新加载系统配置')
       }
-      setForceSyncExternal(variables.force_sync_external)
-      setMatchRule(
-        variables.match_rule as
-          | 'node_name'
-          | 'server_port'
-          | 'type_server_port'
-          | 'type_server_port_cred'
-      )
-      setSyncScope(variables.sync_scope as 'saved_only' | 'all')
-      setKeepNodeName(variables.keep_node_name)
-      setCacheExpireMinutes(variables.cache_expire_minutes)
-      setSyncTraffic(variables.sync_traffic)
-      setEnableProbeBinding(variables.enable_probe_binding)
-      setEnableShortLink(variables.enable_short_link)
-      setTemplateVersion(variables.template_version as 'v1' | 'v2' | 'v3')
-      setEnableProxyProvider(variables.enable_proxy_provider)
-      setProxyGroupsSourceUrl(variables.proxy_groups_source_url || '')
-      setClientCompatibilityMode(variables.client_compatibility_mode)
-      setSilentMode(variables.silent_mode)
-      setSilentModeTimeout(variables.silent_mode_timeout)
-      setNodeNameFilter(variables.node_name_filter)
-      setAppendSubInfo(variables.append_sub_info)
-      setEnableSubInfoNodes(variables.enable_sub_info_nodes)
-      setSubInfoV2RayOnly(variables.sub_info_v2ray_only)
-      setSubInfoExpirePrefix(variables.sub_info_expire_prefix)
-      setSubInfoTrafficPrefix(variables.sub_info_traffic_prefix)
-      setEnableSubTrafficHeader(variables.enable_sub_traffic_header)
-      setEnableOverrideScripts(variables.enable_override_scripts)
-      setSubscriptionOutputFormat(
-        variables.subscription_output_format || 'yaml'
-      )
-      setLoginRateMaxAttempts(variables.login_rate_max_attempts)
-      setLoginRateWindow(variables.login_rate_window)
-      setLoginRateLockDuration(variables.login_rate_lock_duration)
-      setBruteForceEnabled(variables.brute_force_enabled)
-      setBruteForceMaxFailures(variables.brute_force_max_failures)
-      setBruteForceWindow(variables.brute_force_window)
-      setBruteForceBlockDuration(variables.brute_force_block_duration)
-      setSubRateLimitEnabled(variables.sub_rate_limit_enabled)
-      setSubRateLimitMax(variables.sub_rate_limit_max)
-      setSubRateLimitWindow(variables.sub_rate_limit_window)
-      setSkipLocalIP(variables.skip_local_ip)
-      setBlockUnknownSubUA(variables.block_unknown_subscription_ua)
+      // The endpoint replaces the whole record. Start from the server copy so
+      // saving one setting does not write other drafts or erase node order.
+      const { data } = await api.put<UserConfig>('/api/user/config', {
+        ...snapshot,
+        ...updates,
+      })
+      return { config: data, previousShortLink: snapshot.enable_short_link }
+    },
+    onSuccess: async ({ config, previousShortLink }, { updates, accessToken }) => {
+      if (useAuthStore.getState().auth.accessToken !== accessToken) return
+      await queryClient.cancelQueries({ queryKey: USER_CONFIG_KEY, exact: true })
+      if (useAuthStore.getState().auth.accessToken !== accessToken) return
+      queryClient.setQueryData(USER_CONFIG_KEY, config)
+      clearSavedDraft(updates)
+      if (config.enable_short_link !== previousShortLink) {
+        void queryClient.invalidateQueries({ queryKey: ['user-subscriptions'] })
+      }
       toast.success('设置已更新')
     },
-    onError: (error) => {
-      handleServerError(error)
-      toast.error('更新设置失败')
+    onError: (error, { accessToken }) => {
+      if (useAuthStore.getState().auth.accessToken === accessToken) {
+        handleServerError(error)
+      }
     },
   })
 
-  // 通用的更新配置方法
+  const configControlsDisabled =
+    !userConfig || userConfigQuery.isError || updateConfigMutation.isPending
+
+  const editConfig = <K extends keyof UserConfig>(key: K, value: UserConfig[K]) => {
+    if (
+      updateConfigMutation.isError &&
+      updateConfigMutation.variables &&
+      key in updateConfigMutation.variables.updates
+    ) {
+      updateConfigMutation.reset()
+    }
+    setConfigDraft((draft) => ({ ...draft, [key]: value }))
+  }
+
   const updateConfig = (updates: Partial<UserConfig>) => {
-    updateConfigMutation.mutate({
-      force_sync_external: forceSyncExternal,
-      match_rule: matchRule,
-      sync_scope: syncScope,
-      keep_node_name: keepNodeName,
-      cache_expire_minutes: cacheExpireMinutes,
-      sync_traffic: syncTraffic,
-      enable_probe_binding: enableProbeBinding,
-      enable_short_link: enableShortLink,
-      template_version: templateVersion,
-      enable_proxy_provider: enableProxyProvider,
-      proxy_groups_source_url: proxyGroupsSourceUrl,
-      client_compatibility_mode: clientCompatibilityMode,
-      silent_mode: silentMode,
-      silent_mode_timeout: silentModeTimeout,
-      node_name_filter: nodeNameFilter,
-      append_sub_info: appendSubInfo,
-      enable_sub_info_nodes: enableSubInfoNodes,
-      sub_info_v2ray_only: subInfoV2RayOnly,
-      sub_info_expire_prefix: subInfoExpirePrefix,
-      sub_info_traffic_prefix: subInfoTrafficPrefix,
-      enable_sub_traffic_header: enableSubTrafficHeader,
-      enable_override_scripts: enableOverrideScripts,
-      subscription_output_format: subscriptionOutputFormat,
-      login_rate_max_attempts: loginRateMaxAttempts,
-      login_rate_window: loginRateWindow,
-      login_rate_lock_duration: loginRateLockDuration,
-      brute_force_enabled: bruteForceEnabled,
-      brute_force_max_failures: bruteForceMaxFailures,
-      brute_force_window: bruteForceWindow,
-      brute_force_block_duration: bruteForceBlockDuration,
-      sub_rate_limit_enabled: subRateLimitEnabled,
-      sub_rate_limit_max: subRateLimitMax,
-      sub_rate_limit_window: subRateLimitWindow,
-      skip_local_ip: skipLocalIP,
-      block_unknown_subscription_ua: blockUnknownSubUA,
-      ...updates,
-    })
+    if (configControlsDisabled) return
+    const snapshot = queryClient.getQueryData<UserConfig>(USER_CONFIG_KEY)
+    if (!snapshot) return
+    if ((Object.keys(updates) as (keyof UserConfig)[]).every(
+      (key) => updates[key] === snapshot[key]
+    )) {
+      clearSavedDraft(updates)
+      updateConfigMutation.reset()
+      return
+    }
+    updateConfigMutation.mutate({ updates, accessToken: auth.accessToken })
   }
 
   return (
@@ -414,6 +389,52 @@ function SystemSettingsPage() {
           <h1 className='text-3xl font-semibold tracking-tight'>系统设置</h1>
           <p className='text-muted-foreground'>管理订阅同步和功能开关</p>
         </section>
+
+        {userConfigQuery.isError ? (
+          <div className='mt-4 flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2'>
+            <p role='alert' className='text-destructive text-sm'>
+              {userConfig
+                ? '系统配置刷新失败，已保留当前输入。'
+                : '系统配置加载失败。'}
+            </p>
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              disabled={userConfigQuery.isFetching}
+              onClick={() => void userConfigQuery.refetch()}
+            >
+              {userConfigQuery.isFetching ? '正在重试…' : '重试加载系统配置'}
+            </Button>
+          </div>
+        ) : !userConfig ? (
+          <p role='status' className='text-muted-foreground mt-4 text-sm'>
+            正在加载系统配置…
+          </p>
+        ) : null}
+        {updateConfigMutation.isPending ? (
+          <p role='status' className='text-muted-foreground mt-4 text-sm'>
+            正在保存系统设置…
+          </p>
+        ) : updateConfigMutation.isError && updateConfigMutation.variables ? (
+          <div className='mt-4 flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2'>
+            <p role='alert' className='text-destructive text-sm'>
+              系统设置保存失败，已保留当前输入。
+            </p>
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              disabled={configControlsDisabled}
+              onClick={() => {
+                const failed = updateConfigMutation.variables
+                if (failed) updateConfig(failed.updates)
+              }}
+            >
+              重试保存系统设置
+            </Button>
+          </div>
+        ) : null}
 
         <Tabs
           value={settingsTab}
@@ -472,7 +493,7 @@ function SystemSettingsPage() {
                   onCheckedChange={(checked) =>
                     updateConfig({ sync_traffic: checked })
                   }
-                  disabled={loadingConfig || updateConfigMutation.isPending}
+                  disabled={configControlsDisabled}
                 />
               </div>
 
@@ -499,7 +520,7 @@ function SystemSettingsPage() {
                   onCheckedChange={(checked) =>
                     updateConfig({ append_sub_info: checked })
                   }
-                  disabled={loadingConfig || updateConfigMutation.isPending}
+                  disabled={configControlsDisabled}
                 />
               </div>
 
@@ -520,11 +541,11 @@ function SystemSettingsPage() {
                 <Input
                   id='node-name-filter'
                   value={nodeNameFilter}
-                  onChange={(e) => setNodeNameFilter(e.target.value)}
+                  onChange={(e) => editConfig('node_name_filter', e.target.value)}
                   onBlur={() =>
                     updateConfig({ node_name_filter: nodeNameFilter })
                   }
-                  disabled={loadingConfig || updateConfigMutation.isPending}
+                  disabled={configControlsDisabled}
                   placeholder='剩余|流量|到期|订阅|时间|重置'
                 />
                 <p className='text-muted-foreground text-xs'>
@@ -557,7 +578,7 @@ function SystemSettingsPage() {
                   onCheckedChange={(checked) =>
                     updateConfig({ force_sync_external: checked })
                   }
-                  disabled={loadingConfig || updateConfigMutation.isPending}
+                  disabled={configControlsDisabled}
                 />
               </div>
 
@@ -574,10 +595,9 @@ function SystemSettingsPage() {
                           | 'type_server_port'
                           | 'type_server_port_cred'
                       ) => {
-                        setMatchRule(value)
                         updateConfig({ match_rule: value })
                       }}
-                      disabled={loadingConfig || updateConfigMutation.isPending}
+                      disabled={configControlsDisabled}
                       className='flex flex-wrap gap-4'
                     >
                       <div className='flex items-center space-x-2'>
@@ -636,10 +656,9 @@ function SystemSettingsPage() {
                     <RadioGroup
                       value={syncScope}
                       onValueChange={(value: 'saved_only' | 'all') => {
-                        setSyncScope(value)
                         updateConfig({ sync_scope: value })
                       }}
-                      disabled={loadingConfig || updateConfigMutation.isPending}
+                      disabled={configControlsDisabled}
                       className='flex flex-wrap gap-4'
                     >
                       <div className='flex items-center space-x-2'>
@@ -689,10 +708,9 @@ function SystemSettingsPage() {
                       id='keep-node-name'
                       checked={keepNodeName}
                       onCheckedChange={(checked) => {
-                        setKeepNodeName(checked)
                         updateConfig({ keep_node_name: checked })
                       }}
-                      disabled={loadingConfig || updateConfigMutation.isPending}
+                      disabled={configControlsDisabled}
                     />
                   </div>
 
@@ -718,14 +736,14 @@ function SystemSettingsPage() {
                       min='0'
                       value={cacheExpireMinutes}
                       onChange={(e) =>
-                        setCacheExpireMinutes(parseInt(e.target.value) || 0)
+                        editConfig('cache_expire_minutes', parseInt(e.target.value) || 0)
                       }
                       onBlur={() =>
                         updateConfig({
                           cache_expire_minutes: cacheExpireMinutes,
                         })
                       }
-                      disabled={loadingConfig || updateConfigMutation.isPending}
+                      disabled={configControlsDisabled}
                       placeholder='0'
                       className='w-32'
                     />
@@ -778,7 +796,7 @@ function SystemSettingsPage() {
                     onCheckedChange={(checked) =>
                       updateConfig({ enable_probe_binding: checked })
                     }
-                    disabled={loadingConfig || updateConfigMutation.isPending}
+                    disabled={configControlsDisabled}
                   />
                 </div>
 
@@ -808,7 +826,7 @@ function SystemSettingsPage() {
                     onCheckedChange={(checked) =>
                       updateConfig({ enable_short_link: checked })
                     }
-                    disabled={loadingConfig || updateConfigMutation.isPending}
+                    disabled={configControlsDisabled}
                   />
                 </div>
 
@@ -829,21 +847,19 @@ function SystemSettingsPage() {
                       </TooltipContent>
                     </Tooltip>
                   </div>
-                  <div className='flex gap-2'>
-                    {[
+                  <div className='flex flex-wrap gap-2'>
+                    {([
                       { value: 'v1', label: '旧 (v1)' },
                       { value: 'v2', label: '通用后端 (v2)' },
                       { value: 'v3', label: '新 (v3)' },
-                    ].map((option) => (
+                    ] as const).map((option) => (
                       <button
                         key={option.value}
                         type='button'
                         onClick={() =>
                           updateConfig({ template_version: option.value })
                         }
-                        disabled={
-                          loadingConfig || updateConfigMutation.isPending
-                        }
+                        disabled={configControlsDisabled}
                         className={`flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors ${
                           templateVersion === option.value
                             ? 'bg-primary text-primary-foreground border-primary'
@@ -894,7 +910,7 @@ function SystemSettingsPage() {
                     onCheckedChange={(checked) =>
                       updateConfig({ enable_proxy_provider: checked })
                     }
-                    disabled={loadingConfig || updateConfigMutation.isPending}
+                    disabled={configControlsDisabled}
                   />
                 </div>
 
@@ -925,7 +941,7 @@ function SystemSettingsPage() {
                     onCheckedChange={(checked) =>
                       updateConfig({ client_compatibility_mode: checked })
                     }
-                    disabled={loadingConfig || updateConfigMutation.isPending}
+                    disabled={configControlsDisabled}
                   />
                 </div>
 
@@ -956,11 +972,27 @@ function SystemSettingsPage() {
                     onCheckedChange={(checked) =>
                       updateConfig({ enable_override_scripts: checked })
                     }
-                    disabled={loadingConfig || updateConfigMutation.isPending}
+                    disabled={configControlsDisabled}
                   />
                 </div>
 
                 {/* 通知推送 */}
+                {notifyConfigQuery.isError && (
+                  <div className='flex flex-wrap items-center gap-2'>
+                    <p role='alert' className='text-destructive text-sm'>
+                      加载通知配置失败。
+                    </p>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      disabled={notifyConfigQuery.isFetching}
+                      onClick={() => void notifyConfigQuery.refetch()}
+                    >
+                      {notifyConfigQuery.isFetching ? '正在重试…' : '重试加载通知配置'}
+                    </Button>
+                  </div>
+                )}
                 <div className='flex items-center justify-between rounded-lg border p-3'>
                   <div className='flex items-center gap-2'>
                     <Popover>
@@ -969,6 +1001,7 @@ function SystemSettingsPage() {
                           variant='outline'
                           size='icon'
                           className='h-7 w-7'
+                          disabled={notifyControlsDisabled}
                         >
                           <Settings className='h-3.5 w-3.5' />
                         </Button>
@@ -1219,7 +1252,7 @@ function SystemSettingsPage() {
                     onCheckedChange={(checked) =>
                       saveNotifyConfig({ notify_enabled: checked })
                     }
-                    disabled={updateNotifyMutation.isPending}
+                    disabled={notifyControlsDisabled}
                   />
                 </div>
 
@@ -1247,7 +1280,7 @@ function SystemSettingsPage() {
                     onCheckedChange={(checked) =>
                       updateConfig({ silent_mode: checked })
                     }
-                    disabled={loadingConfig || updateConfigMutation.isPending}
+                    disabled={configControlsDisabled}
                   />
                 </div>
 
@@ -1279,7 +1312,7 @@ function SystemSettingsPage() {
                     onCheckedChange={(checked) =>
                       updateConfig({ enable_sub_traffic_header: checked })
                     }
-                    disabled={loadingConfig || updateConfigMutation.isPending}
+                    disabled={configControlsDisabled}
                   />
                 </div>
 
@@ -1314,7 +1347,7 @@ function SystemSettingsPage() {
                           })
                         }
                         disabled={
-                          loadingConfig || updateConfigMutation.isPending
+                          configControlsDisabled
                         }
                         className={`rounded-md border px-3 py-1 text-xs transition-colors ${
                           subscriptionOutputFormat === opt.value
@@ -1351,9 +1384,9 @@ function SystemSettingsPage() {
                     min={1}
                     max={1440}
                     value={silentModeTimeout}
-                    disabled={loadingConfig || updateConfigMutation.isPending}
+                    disabled={configControlsDisabled}
                     onChange={(e) =>
-                      setSilentModeTimeout(parseInt(e.target.value) || 15)
+                      editConfig('silent_mode_timeout', parseInt(e.target.value) || 15)
                     }
                     onBlur={() =>
                       updateConfig({ silent_mode_timeout: silentModeTimeout })
@@ -1390,7 +1423,7 @@ function SystemSettingsPage() {
                     onCheckedChange={(checked) =>
                       updateConfig({ enable_sub_info_nodes: checked })
                     }
-                    disabled={loadingConfig || updateConfigMutation.isPending}
+                    disabled={configControlsDisabled}
                   />
                 </div>
                 {enableSubInfoNodes && (
@@ -1411,7 +1444,7 @@ function SystemSettingsPage() {
                       onCheckedChange={(checked) =>
                         updateConfig({ sub_info_v2ray_only: checked })
                       }
-                      disabled={loadingConfig || updateConfigMutation.isPending}
+                      disabled={configControlsDisabled}
                     />
                   </div>
                 )}
@@ -1424,14 +1457,14 @@ function SystemSettingsPage() {
                       <Input
                         id='sub-info-expire-prefix'
                         value={subInfoExpirePrefix}
-                        onChange={(e) => setSubInfoExpirePrefix(e.target.value)}
+                        onChange={(e) => editConfig('sub_info_expire_prefix', e.target.value)}
                         onBlur={() =>
                           updateConfig({
                             sub_info_expire_prefix: subInfoExpirePrefix,
                           })
                         }
                         disabled={
-                          loadingConfig || updateConfigMutation.isPending
+                          configControlsDisabled
                         }
                         placeholder='📅过期时间'
                       />
@@ -1444,7 +1477,7 @@ function SystemSettingsPage() {
                         id='sub-info-traffic-prefix'
                         value={subInfoTrafficPrefix}
                         onChange={(e) =>
-                          setSubInfoTrafficPrefix(e.target.value)
+                          editConfig('sub_info_traffic_prefix', e.target.value)
                         }
                         onBlur={() =>
                           updateConfig({
@@ -1452,7 +1485,7 @@ function SystemSettingsPage() {
                           })
                         }
                         disabled={
-                          loadingConfig || updateConfigMutation.isPending
+                          configControlsDisabled
                         }
                         placeholder='⌛剩余流量'
                       />
@@ -1496,10 +1529,9 @@ function SystemSettingsPage() {
                 <Switch
                   checked={skipLocalIP}
                   onCheckedChange={(v) => {
-                    setSkipLocalIP(v)
                     updateConfig({ skip_local_ip: v })
                   }}
-                  disabled={loadingConfig || updateConfigMutation.isPending}
+                  disabled={configControlsDisabled}
                 />
               </div>
 
@@ -1517,10 +1549,9 @@ function SystemSettingsPage() {
                 <Switch
                   checked={blockUnknownSubUA}
                   onCheckedChange={(v) => {
-                    setBlockUnknownSubUA(v)
                     updateConfig({ block_unknown_subscription_ua: v })
                   }}
-                  disabled={loadingConfig || updateConfigMutation.isPending}
+                  disabled={configControlsDisabled}
                 />
               </div>
 
@@ -1548,9 +1579,9 @@ function SystemSettingsPage() {
                       min={1}
                       value={loginRateMaxAttempts}
                       onChange={(e) =>
-                        setLoginRateMaxAttempts(Number(e.target.value) || 5)
+                        editConfig('login_rate_max_attempts', Number(e.target.value) || 5)
                       }
-                      disabled={loadingConfig || updateConfigMutation.isPending}
+                      disabled={configControlsDisabled}
                     />
                   </div>
                   <div className='space-y-1'>
@@ -1560,9 +1591,9 @@ function SystemSettingsPage() {
                       min={1}
                       value={loginRateWindow}
                       onChange={(e) =>
-                        setLoginRateWindow(Number(e.target.value) || 60)
+                        editConfig('login_rate_window', Number(e.target.value) || 60)
                       }
-                      disabled={loadingConfig || updateConfigMutation.isPending}
+                      disabled={configControlsDisabled}
                     />
                   </div>
                   <div className='space-y-1'>
@@ -1572,9 +1603,9 @@ function SystemSettingsPage() {
                       min={1}
                       value={loginRateLockDuration}
                       onChange={(e) =>
-                        setLoginRateLockDuration(Number(e.target.value) || 60)
+                        editConfig('login_rate_lock_duration', Number(e.target.value) || 60)
                       }
-                      disabled={loadingConfig || updateConfigMutation.isPending}
+                      disabled={configControlsDisabled}
                     />
                   </div>
                 </div>
@@ -1594,10 +1625,9 @@ function SystemSettingsPage() {
                   <Switch
                     checked={bruteForceEnabled}
                     onCheckedChange={(v) => {
-                      setBruteForceEnabled(v)
                       updateConfig({ brute_force_enabled: v })
                     }}
-                    disabled={loadingConfig || updateConfigMutation.isPending}
+                    disabled={configControlsDisabled}
                   />
                 </div>
                 {bruteForceEnabled && (
@@ -1609,10 +1639,10 @@ function SystemSettingsPage() {
                         min={1}
                         value={bruteForceMaxFailures}
                         onChange={(e) =>
-                          setBruteForceMaxFailures(Number(e.target.value) || 5)
+                          editConfig('brute_force_max_failures', Number(e.target.value) || 5)
                         }
                         disabled={
-                          loadingConfig || updateConfigMutation.isPending
+                          configControlsDisabled
                         }
                       />
                     </div>
@@ -1623,10 +1653,10 @@ function SystemSettingsPage() {
                         min={1}
                         value={bruteForceWindow}
                         onChange={(e) =>
-                          setBruteForceWindow(Number(e.target.value) || 1440)
+                          editConfig('brute_force_window', Number(e.target.value) || 1440)
                         }
                         disabled={
-                          loadingConfig || updateConfigMutation.isPending
+                          configControlsDisabled
                         }
                       />
                     </div>
@@ -1637,12 +1667,13 @@ function SystemSettingsPage() {
                         min={1}
                         value={bruteForceBlockDuration}
                         onChange={(e) =>
-                          setBruteForceBlockDuration(
+                          editConfig(
+                            'brute_force_block_duration',
                             Number(e.target.value) || 1440
                           )
                         }
                         disabled={
-                          loadingConfig || updateConfigMutation.isPending
+                          configControlsDisabled
                         }
                       />
                     </div>
@@ -1664,10 +1695,9 @@ function SystemSettingsPage() {
                   <Switch
                     checked={subRateLimitEnabled}
                     onCheckedChange={(v) => {
-                      setSubRateLimitEnabled(v)
                       updateConfig({ sub_rate_limit_enabled: v })
                     }}
-                    disabled={loadingConfig || updateConfigMutation.isPending}
+                    disabled={configControlsDisabled}
                   />
                 </div>
                 {subRateLimitEnabled && (
@@ -1679,10 +1709,10 @@ function SystemSettingsPage() {
                         min={1}
                         value={subRateLimitMax}
                         onChange={(e) =>
-                          setSubRateLimitMax(Number(e.target.value) || 30)
+                          editConfig('sub_rate_limit_max', Number(e.target.value) || 30)
                         }
                         disabled={
-                          loadingConfig || updateConfigMutation.isPending
+                          configControlsDisabled
                         }
                       />
                     </div>
@@ -1693,10 +1723,10 @@ function SystemSettingsPage() {
                         min={1}
                         value={subRateLimitWindow}
                         onChange={(e) =>
-                          setSubRateLimitWindow(Number(e.target.value) || 120)
+                          editConfig('sub_rate_limit_window', Number(e.target.value) || 120)
                         }
                         disabled={
-                          loadingConfig || updateConfigMutation.isPending
+                          configControlsDisabled
                         }
                       />
                     </div>
@@ -1722,7 +1752,7 @@ function SystemSettingsPage() {
                     block_unknown_subscription_ua: blockUnknownSubUA,
                   })
                 }
-                disabled={loadingConfig || updateConfigMutation.isPending}
+                disabled={configControlsDisabled}
               >
                 保存安全配置
               </Button>
@@ -1750,11 +1780,10 @@ function SystemSettingsPage() {
                     id='proxy-groups-source-url'
                     value={proxyGroupsSourceUrl}
                     placeholder='https://raw.githubusercontent.com/iluobei/miaomiaowu/refs/heads/main/proxy_groups/proxy_groups.json'
-                    disabled={loadingConfig || updateConfigMutation.isPending}
-                    onChange={(e) => setProxyGroupsSourceUrl(e.target.value)}
+                    disabled={configControlsDisabled}
+                    onChange={(e) => editConfig('proxy_groups_source_url', e.target.value)}
                     onBlur={() => {
                       const trimmed = proxyGroupsSourceUrl.trim()
-                      setProxyGroupsSourceUrl(trimmed)
                       updateConfig({ proxy_groups_source_url: trimmed })
                     }}
                   />

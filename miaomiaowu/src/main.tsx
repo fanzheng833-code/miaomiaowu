@@ -74,6 +74,9 @@ const queryClient = new QueryClient({
   }),
 })
 
+// The profile is shared by the layout and several editors.
+queryClient.setQueryDefaults(['profile'], { meta: { showErrorInPage: true } })
+
 useAuthStore.subscribe((state, previousState) => {
   if (state.auth.accessToken !== previousState.auth.accessToken) {
     queryClient.removeQueries()
