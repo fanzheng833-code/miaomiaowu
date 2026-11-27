@@ -1,8 +1,20 @@
 // @ts-nocheck
-import { type UIEvent, useLayoutEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  type UIEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { createFileRoute, redirect } from '@tanstack/react-router'
-import { RefreshCw, ShieldBan, ShieldCheck } from 'lucide-react'
+import { Copy, RefreshCw, ShieldBan, ShieldCheck, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -13,6 +25,7 @@ import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { LogFilesPanel } from '@/components/log-files-panel'
 import { api } from '@/lib/api'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { profileQueryFn } from '@/lib/profile'
 
 export const Route = createFileRoute('/logs')({
@@ -48,26 +61,39 @@ function LogsPage() {
 
 type LogRow = { time: string; level: string; msg: string; fields?: string; raw?: string }
 const LEVELS = ['', 'DEBUG', 'INFO', 'WARN', 'ERROR']
+const SEARCH_DELAY_MS = 300
 
 // 主控自身日志(data/logs/mmw.log)的查看:级别/关键字筛选 + 行数 + 自动刷新,下方附日志文件管理。
 function SystemLogPanel() {
   const [level, setLevel] = useState('')
-  const [q, setQ] = useState('')
+  const [searchInput, setSearchInput] = useState('')
+  const [keyword, setKeyword] = useState('')
+  const [composing, setComposing] = useState(false)
   const [lines, setLines] = useState(100)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [isFollowing, setIsFollowing] = useState(true)
   const outputRef = useRef<HTMLDivElement>(null)
   const followingRef = useRef(true)
   const queryClient = useQueryClient()
-  const queryKey = ['admin-logs-system', level, q, lines]
-  const shouldPoll = autoRefresh && isFollowing
+  const queryKey = ['admin-logs-system', level, keyword, lines]
+  const trimmedInput = searchInput.trim()
+  const searchPending = composing || trimmedInput !== keyword
+  const shouldPoll = autoRefresh && isFollowing && !searchPending
+  const hasFilters = Boolean(level || keyword)
 
-  const { data, isError, isFetching, isPending, refetch } = useQuery({
+  const {
+    data,
+    isError,
+    isFetching,
+    isPending,
+    isPlaceholderData,
+    refetch,
+  } = useQuery({
     queryKey,
     queryFn: async ({ signal }) => {
       const params = new URLSearchParams({ lines: String(lines) })
       if (level) params.set('level', level)
-      if (q) params.set('q', q)
+      if (keyword) params.set('q', keyword)
       const response = await api.get(`/api/admin/logs/system?${params.toString()}`, { signal })
       return response.data as {
         rows: LogRow[]
@@ -76,6 +102,8 @@ function SystemLogPanel() {
         error?: string
       }
     },
+    placeholderData: keepPreviousData,
+    retry: false,
     meta: { showErrorInPage: true },
     refetchInterval: shouldPoll ? 5000 : false,
     refetchIntervalInBackground: true,
@@ -83,16 +111,52 @@ function SystemLogPanel() {
     refetchOnWindowFocus: shouldPoll,
   })
   const rows = data?.rows ?? []
+  const applyingFilters = searchPending || isPlaceholderData
 
   useLayoutEffect(() => {
     const output = outputRef.current
     // 在滚动事件中记住跟随状态，避免新日志改变高度后误判。
-    if (output && followingRef.current) output.scrollTop = output.scrollHeight
-  }, [data])
+    if (output && followingRef.current && !applyingFilters) {
+      output.scrollTop = output.scrollHeight
+    }
+  }, [data, applyingFilters])
 
-  function resumeFollowing() {
+  const resumeFollowing = useCallback(() => {
     followingRef.current = true
     setIsFollowing(true)
+  }, [])
+
+  const applyKeyword = useCallback(
+    (value: string) => {
+      if (value === keyword) return
+      resumeFollowing()
+      setKeyword(value)
+    },
+    [keyword, resumeFollowing]
+  )
+
+  useEffect(() => {
+    if (composing || trimmedInput === keyword) return
+    const timer = window.setTimeout(
+      () => applyKeyword(trimmedInput),
+      SEARCH_DELAY_MS
+    )
+    return () => window.clearTimeout(timer)
+  }, [applyKeyword, composing, keyword, trimmedInput])
+
+  function clearSearch() {
+    setSearchInput('')
+    applyKeyword('')
+  }
+
+  function changeAutoRefresh(checked: boolean) {
+    setAutoRefresh(checked)
+    if (applyingFilters || !data) return
+    if (!checked) {
+      void queryClient.cancelQueries({ queryKey, exact: true })
+    } else if (followingRef.current) {
+      void refetch()
+    }
   }
 
   function handleScroll({ currentTarget: output }: UIEvent<HTMLDivElement>) {
@@ -102,10 +166,10 @@ function SystemLogPanel() {
 
     followingRef.current = atBottom
     setIsFollowing(atBottom)
-    if (!atBottom) {
+    if (!atBottom && !applyingFilters) {
       // 滚出尾部时冻结当前日志，避免在途轮询覆盖正在阅读的记录。
       void queryClient.cancelQueries({ queryKey, exact: true })
-    } else if (autoRefresh) {
+    } else if (atBottom && autoRefresh && !applyingFilters) {
       void refetch()
     }
   }
@@ -117,6 +181,16 @@ function SystemLogPanel() {
     void refetch()
   }
 
+  async function copyRows() {
+    if (applyingFilters || rows.length === 0) return
+    const copied = await copyTextToClipboard(rows.map(logRowText).join('\n'))
+    if (copied) {
+      toast.success('已复制当前日志结果')
+    } else {
+      toast.error('复制失败，请手动选择日志文本')
+    }
+  }
+
   return (
     <div className='mt-4 space-y-4'>
       <div className='flex flex-wrap items-center gap-2'>
@@ -124,6 +198,7 @@ function SystemLogPanel() {
           value={level || 'all'}
           onValueChange={(value) => {
             resumeFollowing()
+            if (!composing) applyKeyword(trimmedInput)
             setLevel(value === 'all' ? '' : value)
           }}
         >
@@ -138,20 +213,41 @@ function SystemLogPanel() {
             ))}
           </SelectContent>
         </Select>
-        <Input
-          value={q}
-          onChange={(event) => {
-            resumeFollowing()
-            setQ(event.target.value)
-          }}
-          aria-label='日志关键字'
-          placeholder='搜索关键字'
-          className='w-full sm:w-56'
-        />
+        <div className='flex w-full items-center gap-1 sm:w-64'>
+          <Input
+            value={searchInput}
+            onChange={(event) => setSearchInput(event.target.value)}
+            onCompositionStart={() => setComposing(true)}
+            onCompositionEnd={(event) => {
+              setSearchInput(event.currentTarget.value)
+              setComposing(false)
+            }}
+            onKeyDown={(event) => {
+              if (composing || event.nativeEvent.isComposing) return
+              if (event.key === 'Enter') applyKeyword(trimmedInput)
+              if (event.key === 'Escape') clearSearch()
+            }}
+            aria-label='日志关键字'
+            placeholder='搜索关键字'
+            className='min-w-0 flex-1'
+          />
+          {searchInput && (
+            <Button
+              type='button'
+              size='icon'
+              variant='ghost'
+              aria-label='清除日志关键字'
+              onClick={clearSearch}
+            >
+              <X aria-hidden='true' className='size-4' />
+            </Button>
+          )}
+        </div>
         <Select
           value={String(lines)}
           onValueChange={(value) => {
             resumeFollowing()
+            if (!composing) applyKeyword(trimmedInput)
             setLines(Number(value))
           }}
         >
@@ -172,7 +268,7 @@ function SystemLogPanel() {
           size='sm'
           aria-label='刷新日志'
           onClick={() => void refetch()}
-          disabled={isFetching}
+          disabled={isFetching || applyingFilters}
         >
           <RefreshCw
             aria-hidden='true'
@@ -180,7 +276,7 @@ function SystemLogPanel() {
           />
         </Button>
         <label className='ml-auto flex items-center gap-2 text-sm'>
-          <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
+          <Switch checked={autoRefresh} onCheckedChange={changeAutoRefresh} />
           自动刷新
         </label>
       </div>
@@ -193,17 +289,38 @@ function SystemLogPanel() {
                 : '仅手动刷新'
               : '已暂停跟随'}
           </span>
-          <Button
-            type='button'
-            variant='outline'
-            size='sm'
-            onClick={jumpToLatest}
-            disabled={isFollowing}
-          >
-            跳到最新
-          </Button>
+          <div className='flex flex-wrap gap-2'>
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              onClick={() => void copyRows()}
+              disabled={applyingFilters || rows.length === 0}
+            >
+              <Copy aria-hidden='true' className='size-4' />
+              复制结果
+            </Button>
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              onClick={jumpToLatest}
+              disabled={isFollowing || applyingFilters}
+            >
+              跳到最新
+            </Button>
+          </div>
         </div>
-        {isError && data && (
+        {applyingFilters ? (
+          <p className='text-muted-foreground border-b px-3 py-2 text-xs' role='status'>
+            {rows.length > 0 ? '正在应用筛选，暂时显示上次获取的日志。' : '正在应用筛选…'}
+          </p>
+        ) : hasFilters && data && !data.error && !data.note && (
+          <p className='text-muted-foreground border-b px-3 py-2 text-xs' role='status'>
+            当前筛选返回 {rows.length} 条日志
+          </p>
+        )}
+        {isError && data && !applyingFilters && (
           <p className='text-destructive border-b px-3 py-2 text-sm' role='alert'>
             日志刷新失败，当前显示上次获取的结果。
           </p>
@@ -231,7 +348,9 @@ function SystemLogPanel() {
                     ? `读取日志失败：${data.error}（${data.log_path}）`
                     : data?.note
                       ? `${data.note}（${data.log_path}）`
-                      : '暂无日志'}
+                      : hasFilters
+                        ? '未找到匹配的日志'
+                        : '暂无日志'}
             </span>
           )}
         </div>
@@ -239,6 +358,11 @@ function SystemLogPanel() {
       <LogFilesPanel />
     </div>
   )
+}
+
+function logRowText(row: LogRow) {
+  if (row.raw) return row.raw
+  return [row.time, row.level, row.msg, row.fields].filter(Boolean).join(' ')
 }
 
 function LogLine({ row }: { row: LogRow }) {

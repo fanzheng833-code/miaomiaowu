@@ -21,6 +21,8 @@ type FilesResp = {
   dir?: string
 }
 
+type PurgeTarget = { all: true } | { name: string }
+
 function formatBytes(n: number): string {
   if (!n) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
@@ -43,45 +45,51 @@ function formatBytes(n: number): string {
 export function LogFilesPanel() {
   const queryClient = useQueryClient()
   const queryKey = ['admin-log-files']
-  const [confirm, setConfirm] = useState<{
-    name?: string
-    all?: boolean
-  } | null>(null)
+  const [confirm, setConfirm] = useState<PurgeTarget | null>(null)
 
   const filesQuery = useQuery({
     queryKey,
-    queryFn: async () =>
-      (await api.get('/api/admin/logs/files')).data as FilesResp,
+    queryFn: async ({ signal }) =>
+      (await api.get<FilesResp>('/api/admin/logs/files', { signal })).data,
+    retry: false,
+    meta: { showErrorInPage: true },
   })
 
   const purgeMutation = useMutation({
-    mutationFn: async (target: { name?: string; all?: boolean }) => {
+    networkMode: 'always',
+    mutationFn: async (target: PurgeTarget) => {
       await api.delete('/api/admin/logs/files', {
-        params: target.all ? { all: '1' } : { name: target.name ?? '' },
+        params: 'all' in target ? { all: '1' } : { name: target.name },
       })
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey })
-      toast.success('已清理')
+    onSuccess: async () => {
       setConfirm(null)
+      toast.success('已清理')
+      await queryClient.invalidateQueries({ queryKey })
     },
     onError: () => {
-      toast.error('清理失败')
-      setConfirm(null)
+      void queryClient.invalidateQueries({ queryKey })
     },
   })
 
   const data = filesQuery.data
   const files = data?.files ?? []
+  const canPurge = filesQuery.isSuccess && !filesQuery.isFetching
+  const confirmAll = confirm !== null && 'all' in confirm
+  const confirmName = confirm && 'name' in confirm ? confirm.name : undefined
+  const confirmFile = files.find((file) => file.name === confirmName)
+  const canConfirm = canPurge && (confirmAll ? files.length > 0 : !!confirmFile)
 
   return (
     <div className='border'>
       <div className='flex flex-wrap items-center gap-2 border-b px-3 py-2'>
         <HardDrive className='text-muted-foreground h-4 w-4' />
         <span className='text-sm font-medium'>日志文件</span>
-        <span className='text-muted-foreground text-xs'>
-          共 {files.length} 个 · {formatBytes(data?.total_size ?? 0)}
-        </span>
+        {data && (
+          <span className='text-muted-foreground text-xs'>
+            共 {files.length} 个 · {formatBytes(data.total_size ?? 0)}
+          </span>
+        )}
         {data?.dir && (
           <span className='text-muted-foreground hidden text-xs sm:inline'>
             · {data.dir}
@@ -91,8 +99,10 @@ export function LogFilesPanel() {
           <Button
             variant='outline'
             size='sm'
-            onClick={() => filesQuery.refetch()}
-            disabled={filesQuery.isFetching}
+            aria-label='刷新日志文件'
+            title='刷新日志文件'
+            onClick={() => void filesQuery.refetch()}
+            disabled={filesQuery.isFetching || purgeMutation.isPending}
           >
             <RefreshCw
               className={`h-4 w-4 ${filesQuery.isFetching ? 'animate-spin' : ''}`}
@@ -102,25 +112,50 @@ export function LogFilesPanel() {
             variant='destructive'
             size='sm'
             onClick={() => setConfirm({ all: true })}
-            disabled={files.length === 0 || purgeMutation.isPending}
+            disabled={
+              !canPurge || files.length === 0 || purgeMutation.isPending
+            }
           >
             清空全部
           </Button>
         </div>
       </div>
 
-      {filesQuery.isLoading ? (
-        <div className='text-muted-foreground p-3 text-sm'>加载中…</div>
-      ) : files.length === 0 ? (
+      {filesQuery.isError && (
+        <div className='flex flex-wrap items-center justify-between gap-2 px-3 py-2'>
+          <p role='alert' className='text-destructive text-sm'>
+            {data
+              ? '日志文件刷新失败，当前显示上次加载的结果。'
+              : '加载日志文件失败。'}
+          </p>
+          <Button
+            variant='outline'
+            size='sm'
+            onClick={() => void filesQuery.refetch()}
+            disabled={filesQuery.isFetching || purgeMutation.isPending}
+          >
+            {filesQuery.isFetching ? '正在重试…' : '重试加载日志文件'}
+          </Button>
+        </div>
+      )}
+      {filesQuery.isLoading && (
+        <p role='status' className='text-muted-foreground p-3 text-sm'>
+          正在加载日志文件…
+        </p>
+      )}
+      {filesQuery.isSuccess && files.length === 0 && (
         <div className='text-muted-foreground p-3 text-sm'>暂无日志文件</div>
-      ) : (
+      )}
+      {files.length > 0 && (
         <ul className='divide-y'>
           {files.map((f) => (
             <li
               key={f.name}
               className='flex flex-wrap items-center gap-2 px-3 py-2 text-sm'
             >
-              <span className='truncate font-mono text-xs'>{f.name}</span>
+              <span className='min-w-0 font-mono text-xs break-all'>
+                {f.name}
+              </span>
               {f.active && (
                 <Badge variant='secondary' className='text-[10px]'>
                   写入中
@@ -137,7 +172,8 @@ export function LogFilesPanel() {
                 size='sm'
                 className='text-muted-foreground hover:text-destructive ml-auto'
                 onClick={() => setConfirm({ name: f.name })}
-                disabled={purgeMutation.isPending}
+                disabled={!canPurge || purgeMutation.isPending}
+                aria-label={`${f.active ? '清空' : '删除'} ${f.name}`}
                 title={
                   f.active ? '清空该文件内容(文件本身会保留)' : '删除该文件'
                 }
@@ -151,21 +187,65 @@ export function LogFilesPanel() {
 
       <ConfirmDialog
         open={!!confirm}
-        onOpenChange={(o) => !o && setConfirm(null)}
-        title={confirm?.all ? '清空全部日志文件?' : '清理日志文件?'}
+        onOpenChange={(open) => {
+          if (!open && !purgeMutation.isPending) {
+            purgeMutation.reset()
+            setConfirm(null)
+          }
+        }}
+        title={confirmAll ? '清空全部日志文件？' : '清理日志文件？'}
         desc={
-          confirm?.all
-            ? '历史日志文件将被删除,当前正在写入的文件会被清空(文件保留)。此操作不可撤销。'
-            : files.find((f) => f.name === confirm?.name)?.active
-              ? `「${confirm?.name}」正在写入中,将清空其内容(文件本身保留)。此操作不可撤销。`
-              : `将删除「${confirm?.name}」。此操作不可撤销。`
+          confirmAll
+            ? '历史日志文件将被删除，当前正在写入的文件会被清空并保留。此操作不可撤销。'
+            : confirmFile?.active
+              ? `「${confirmName}」正在写入，将清空其内容并保留文件。此操作不可撤销。`
+              : `将删除「${confirmName ?? ''}」。此操作不可撤销。`
         }
-        confirmText='确定'
+        confirmText={
+          purgeMutation.isPending
+            ? '清理中…'
+            : purgeMutation.isError
+              ? '重试清理'
+              : '确定'
+        }
         cancelBtnText='取消'
         destructive
+        disabled={!canConfirm}
         isLoading={purgeMutation.isPending}
-        handleConfirm={() => confirm && purgeMutation.mutate(confirm)}
-      />
+        handleConfirm={() => {
+          if (confirm && canConfirm && !purgeMutation.isPending) {
+            purgeMutation.mutate(confirm)
+          }
+        }}
+      >
+        {purgeMutation.isError && (
+          <p role='alert' className='text-destructive text-sm'>
+            清理失败，请检查文件列表后重试。
+          </p>
+        )}
+        {filesQuery.isError ? (
+          <div className='flex flex-wrap items-center justify-between gap-2'>
+            <p role='alert' className='text-destructive text-sm'>
+              无法确认当前日志文件列表。
+            </p>
+            <Button
+              variant='outline'
+              size='sm'
+              onClick={() => void filesQuery.refetch()}
+              disabled={filesQuery.isFetching}
+            >
+              重试加载日志文件
+            </Button>
+          </div>
+        ) : (
+          canPurge &&
+          !canConfirm && (
+            <p role='status' className='text-muted-foreground text-sm'>
+              当前没有对应的日志文件可清理。
+            </p>
+          )
+        )}
+      </ConfirmDialog>
     </div>
   )
 }
