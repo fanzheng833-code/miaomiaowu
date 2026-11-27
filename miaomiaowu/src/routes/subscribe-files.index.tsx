@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { format, addDays, isPast, differenceInCalendarDays, isToday } from 'date-fns'
 import { useAuthStore } from '@/stores/auth-store'
 import { api } from '@/lib/api'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { handleServerError } from '@/lib/handle-server-error'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { DataTable } from '@/components/data-table'
@@ -452,10 +453,9 @@ function SubscribeFilesPage() {
   const [batchDeleteDialogOpen, setBatchDeleteDialogOpen] = useState(false)
 
   // 代理集合预览状态（MMW 模式）
-  const [previewDialogOpen, setPreviewDialogOpen] = useState(false)
-  const [previewContent, setPreviewContent] = useState('')
-  const [previewLoading, setPreviewLoading] = useState(false)
-  const [previewConfigName, setPreviewConfigName] = useState('')
+  const [previewProvider, setPreviewProvider] = useState<
+    Pick<ProxyProviderConfig, 'id' | 'name'> | null
+  >(null)
 
   // 获取订阅文件列表
   const [fileSearch, setFileSearch] = useState('')
@@ -549,15 +549,46 @@ function SubscribeFilesPage() {
   const externalSubs = externalSubsData ?? []
 
   // 获取用户订阅 token（用于代理集合 MMW 模式）
-  const { data: userTokenData } = useQuery({
+  const userTokenQuery = useQuery({
     queryKey: ['user-token'],
     queryFn: async () => {
       const response = await api.get('/api/user/token')
       return response.data as { token: string }
     },
     enabled: Boolean(auth.accessToken),
+    meta: { showErrorInPage: true },
   })
-  const userToken = userTokenData?.token ?? ''
+  const userToken = userTokenQuery.data?.token ?? ''
+
+  const previewQuery = useQuery({
+    queryKey: [
+      'proxy-provider-preview',
+      previewProvider?.id,
+      userTokenQuery.dataUpdatedAt,
+    ] as const,
+    queryFn: async ({ queryKey: [, providerID], signal }) => {
+      const token = queryClient.getQueryData<{ token: string }>(['user-token'])?.token
+      if (providerID == null || !token) throw new Error('无法读取预览')
+      const response = await api.get<string>(`/api/proxy-provider/${providerID}`, {
+        params: { token },
+        responseType: 'text',
+        signal,
+      })
+      return response.data
+    },
+    enabled: Boolean(previewProvider && auth.accessToken && userToken),
+    gcTime: 0,
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: false,
+    meta: { showErrorInPage: true },
+  })
+  const previewLoading = userToken
+    ? previewQuery.isPending || previewQuery.isFetching
+    : userTokenQuery.isPending || userTokenQuery.isFetching
+  const previewFailed = !userToken || previewQuery.isError
+  const previewContent = previewQuery.data ?? ''
 
   // 获取用户设置（用于判断是否显示代理集合）
   const { data: userConfigData } = useQuery({
@@ -1308,28 +1339,13 @@ function SubscribeFilesPage() {
   }
 
   // 预览妙妙屋处理后的配置
-  const handlePreviewProxyProvider = async (config: ProxyProviderConfig) => {
+  const handlePreviewProxyProvider = (config: ProxyProviderConfig) => {
     if (config.process_mode !== 'mmw') {
       toast.error('仅妙妙屋处理模式支持预览')
       return
     }
 
-    setPreviewConfigName(config.name)
-    setPreviewContent('')
-    setPreviewLoading(true)
-    setPreviewDialogOpen(true)
-
-    try {
-      const response = await api.get(`/api/proxy-provider/${config.id}?token=${userToken}`, {
-        responseType: 'text',
-      })
-      setPreviewContent(response.data)
-    } catch (error: any) {
-      setPreviewContent(`# 预览失败\n# ${error.response?.data || error.message || '未知错误'}`)
-      toast.error('预览失败')
-    } finally {
-      setPreviewLoading(false)
-    }
+    setPreviewProvider({ id: config.id, name: config.name })
   }
 
   // 生成代理集合YAML配置预览
@@ -5108,6 +5124,7 @@ const handleUpload = () => {
                                   <Button
                                     variant='ghost'
                                     size='sm'
+                                    aria-label={`预览处理结果 - ${config.name}`}
                                     onClick={() => handlePreviewProxyProvider(config)}
                                   >
                                     <Eye className='h-4 w-4' />
@@ -5331,6 +5348,7 @@ const handleUpload = () => {
                                 variant='outline'
                                 size='icon'
                                 className='size-8 shrink-0'
+                                aria-label={`预览处理结果 - ${config.name}`}
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   handlePreviewProxyProvider(config)
@@ -6686,18 +6704,39 @@ const handleUpload = () => {
       </Dialog>
 
       {/* 代理集合预览对话框（MMW 模式） */}
-      <Dialog open={previewDialogOpen} onOpenChange={setPreviewDialogOpen}>
+      <Dialog
+        open={previewProvider !== null}
+        onOpenChange={(open) => {
+          if (!open) setPreviewProvider(null)
+        }}
+      >
         <DialogContent className='max-w-3xl max-h-[80vh]'>
           <DialogHeader>
-            <DialogTitle>预览处理结果 - {previewConfigName}</DialogTitle>
+            <DialogTitle>预览处理结果 - {previewProvider?.name}</DialogTitle>
             <DialogDescription>妙妙屋处理后的代理节点配置</DialogDescription>
           </DialogHeader>
 
           <div className='relative'>
             {previewLoading ? (
-              <div className='flex items-center justify-center py-8'>
-                <RefreshCw className='h-6 w-6 animate-spin text-muted-foreground' />
-                <span className='ml-2 text-muted-foreground'>加载中...</span>
+              <div role='status' className='flex items-center justify-center py-8'>
+                <RefreshCw aria-hidden='true' className='h-6 w-6 animate-spin text-muted-foreground' />
+                <span className='ml-2 text-muted-foreground'>正在加载预览…</span>
+              </div>
+            ) : previewFailed ? (
+              <div className='flex flex-wrap items-center justify-between gap-3 rounded-md border px-3 py-2'>
+                <p role='alert' className='text-sm text-destructive'>
+                  {userToken ? '加载预览失败。' : '无法获取订阅令牌。'}
+                </p>
+                <Button
+                  variant='outline'
+                  size='sm'
+                  onClick={() => {
+                    if (userToken) void previewQuery.refetch()
+                    else void userTokenQuery.refetch()
+                  }}
+                >
+                  重试预览
+                </Button>
               </div>
             ) : (
               <ScrollArea className='h-[50vh] border rounded-md'>
@@ -6710,16 +6749,16 @@ const handleUpload = () => {
             <Button
               variant='outline'
               size='sm'
-              onClick={() => {
-                navigator.clipboard.writeText(previewContent)
-                toast.success('已复制到剪贴板')
+              onClick={async () => {
+                if (await copyTextToClipboard(previewContent)) toast.success('已复制到剪贴板')
+                else toast.error('复制失败，请手动复制')
               }}
-              disabled={previewLoading || !previewContent}
+              disabled={previewLoading || previewFailed || !previewContent}
             >
               <Copy className='h-4 w-4 mr-2' />
               复制
             </Button>
-            <Button variant='outline' onClick={() => setPreviewDialogOpen(false)}>
+            <Button variant='outline' onClick={() => setPreviewProvider(null)}>
               关闭
             </Button>
           </DialogFooter>
