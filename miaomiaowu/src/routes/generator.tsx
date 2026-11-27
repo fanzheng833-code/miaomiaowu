@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Loader2, Save, Layers, Activity, MapPin, Plus, Eye, Pencil, Trash2, Settings, FileText, Upload, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react'
@@ -233,6 +233,15 @@ export const Route = createFileRoute('/generator')({
   component: SubscriptionGeneratorPage,
 })
 
+type GeneratedConfiguration = {
+  content: string
+  revision: number
+  grouped: boolean
+  source:
+    | { kind: 'custom' | 'v1' | 'v2' }
+    | { kind: 'v3'; filename: string; name: string; tags: string[] }
+}
+
 function SubscriptionGeneratorPage() {
   const { auth } = useAuthStore()
   const queryClient = useQueryClient()
@@ -241,7 +250,26 @@ function SubscriptionGeneratorPage() {
   const [selectedCategories, setSelectedCategories] = useState<string[]>([])
   const [customRules, setCustomRules] = useState<CustomRule[]>([])
   const [loading, setLoading] = useState(false)
-  const [clashConfig, setClashConfig] = useState('')
+  const [generatedConfiguration, setGeneratedConfiguration] =
+    useState<GeneratedConfiguration | null>(null)
+  const revisionCounter = useRef(0)
+  const revision = generatedConfiguration?.revision
+  const clashConfig = generatedConfiguration?.content ?? ''
+  const replaceGeneratedConfiguration = (content: string, source: GeneratedConfiguration['source']) => {
+    setGeneratedConfiguration({
+      content,
+      source,
+      revision: ++revisionCounter.current,
+      grouped: false,
+    })
+  }
+  const setClashConfig = useCallback((content: string, grouped?: boolean) => {
+    setGeneratedConfiguration((current) =>
+      current && current.revision === revision
+        ? { ...current, content, grouped: grouped ?? current.grouped }
+        : current
+    )
+  }, [revision])
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<number>>(new Set())
   const [nodeListPage, setNodeListPage] = useState(1)
   const [nodeListPageSize, setNodeListPageSize] = useState(50)
@@ -254,7 +282,6 @@ function SubscriptionGeneratorPage() {
   // 规则模式状态
   const [ruleMode, setRuleMode] = useState<'custom' | 'template'>('custom')
   const [selectedTemplateUrl, setSelectedTemplateUrl] = useState<string>('')
-  const [hasManuallyGrouped, setHasManuallyGrouped] = useState(false)
 
   // 模板管理对话框状态
   const [templateManageDialogOpen, setTemplateManageDialogOpen] = useState(false)
@@ -379,6 +406,20 @@ function SubscriptionGeneratorPage() {
   // V3 模式下选择的模板和标签
   const [selectedV3Template, setSelectedV3Template] = useState<string>('')
   const [selectedV3Tags, setSelectedV3Tags] = useState<string[]>([])
+  const v3Source =
+    generatedConfiguration?.source.kind === 'v3'
+      ? generatedConfiguration.source
+      : null
+  const v3SourceLabel = v3Source
+    ? `模板 ${v3Source.name} · ${v3Source.tags.length ? v3Source.tags.join('、') : '全部节点'}`
+    : null
+  const v3SelectionChanged =
+    v3Source !== null &&
+    (!isV3Mode ||
+      ruleMode !== 'template' ||
+      v3Source.filename !== selectedV3Template ||
+      v3Source.tags.length !== selectedV3Tags.length ||
+      v3Source.tags.some((tag) => !selectedV3Tags.includes(tag)))
 
   // 获取代理集合配置列表
   const { data: proxyProviderConfigsData } = useQuery({
@@ -910,6 +951,7 @@ function SubscriptionGeneratorPage() {
 
   // 加载模板（根据模板系统选择不同的加载方式）
   const handleLoadTemplate = async () => {
+    if (loading) return
     // V3 模式下使用不同的验证逻辑
     if (isV3Mode) {
       if (!selectedV3Template) {
@@ -932,13 +974,26 @@ function SubscriptionGeneratorPage() {
     try {
       // V3 模式：使用 V3 模板处理器
       if (isV3Mode) {
-        const response = await api.post('/api/admin/template-v3/preview-with-tags', {
-          template_filename: selectedV3Template,
-          selected_tags: selectedV3Tags.length > 0 ? selectedV3Tags : undefined,
-        })
+        const source = {
+          kind: 'v3' as const,
+          filename: selectedV3Template,
+          name:
+            v3Templates.find((template) => template.filename === selectedV3Template)?.name ??
+            selectedV3Template,
+          tags: [...selectedV3Tags],
+        }
+        const { data } = await api.post<{ content: string }>(
+          '/api/admin/template-v3/preview-with-tags',
+          {
+            template_filename: source.filename,
+            selected_tags: source.tags.length > 0 ? source.tags : undefined,
+          }
+        )
 
-        setClashConfig(response.data.content)
-        setHasManuallyGrouped(true) // V3 模式下不需要手动分组
+        if (typeof data?.content !== 'string' || !data.content.trim()) {
+          throw new Error('模板未返回配置内容')
+        }
+        replaceGeneratedConfiguration(data.content, source)
         toast.success('成功加载 V3 模板')
         return
       }
@@ -1063,8 +1118,7 @@ function SubscriptionGeneratorPage() {
         console.log('使用旧模板系统，跳过配置校验')
       }
 
-      setClashConfig(finalConfig)
-      setHasManuallyGrouped(false) // 加载模板后重置手动分组状态
+      replaceGeneratedConfiguration(finalConfig, { kind: isV1Mode ? 'v1' : 'v2' })
       toast.success(`成功加载模板并插入 ${proxies.length} 个节点`)
     } catch (error: any) {
       console.error('Load template error:', error)
@@ -1075,6 +1129,7 @@ function SubscriptionGeneratorPage() {
   }
 
   const handleGenerate = async () => {
+    if (loading) return
     if (selectedNodeIds.size === 0) {
       toast.error('请选择至少一个节点')
       return
@@ -1172,8 +1227,7 @@ function SubscriptionGeneratorPage() {
         return
       }
 
-      setClashConfig(generatedConfig)
-      setHasManuallyGrouped(true) // 自定义规则模式生成后自动标记为已分组
+      replaceGeneratedConfiguration(generatedConfig, { kind: 'custom' })
 
       // 显示生成成功通知，如果有新增代理组则包含提示
       if (addedProxyGroups.length > 0) {
@@ -1193,10 +1247,11 @@ function SubscriptionGeneratorPage() {
   }
 
   const handleClear = () => {
+    if (loading) return
     setSelectedNodeIds(new Set())
     setSelectedCategories([])
     setCustomRules([])
-    setClashConfig('')
+    setGeneratedConfiguration(null)
     toast.info('已清空所有内容')
   }
 
@@ -1232,19 +1287,24 @@ function SubscriptionGeneratorPage() {
   })
 
   const handleOpenSaveDialog = () => {
-    if (!clashConfig) {
+    if (loading || saveSubscribeMutation.isPending) return
+    if (!generatedConfiguration?.content.trim()) {
       toast.error('请先生成配置')
       return
     }
     // V1 模式（旧模板系统）必须先手动分组
-    if (ruleMode === 'template' && !hasManuallyGrouped && isV1Mode) {
+    if (generatedConfiguration.source.kind === 'v1' && !generatedConfiguration.grouped) {
       toast.error('请先手动分组节点')
       return
     }
+    saveSubscribeMutation.reset()
     setSaveDialogOpen(true)
   }
 
   const handleSaveSubscribe = () => {
+    if (!generatedConfiguration?.content.trim() || loading || saveSubscribeMutation.isPending) {
+      return
+    }
     if (!subscribeName.trim()) {
       toast.error('请输入订阅名称')
       return
@@ -1263,13 +1323,14 @@ function SubscriptionGeneratorPage() {
       name: subscribeName.trim(),
       filename: subscribeFilename.trim(),
       description: subscribeDescription.trim(),
-      content: clashConfig,
+      content: generatedConfiguration.content,
     }
 
-    // V3 模式下传递模板和标签信息
-    if (isV3Mode && selectedV3Template) {
-      data.template_filename = selectedV3Template
-      data.selected_tags = selectedV3Tags.length > 0 ? selectedV3Tags : undefined
+    // V3 订阅绑定的是生成当前预览时的模板和标签。
+    const source = generatedConfiguration.source
+    if (source.kind === 'v3') {
+      data.template_filename = source.filename
+      data.selected_tags = source.tags.length > 0 ? source.tags : undefined
     }
 
     // 流量配置
@@ -1604,9 +1665,8 @@ function SubscriptionGeneratorPage() {
         setMissingNodesDialogOpen(true)
       } else {
         // 没有缺失节点，直接应用
-        setClashConfig(newConfig)
+        setClashConfig(newConfig, true)
         setGroupDialogOpen(false)
-        setHasManuallyGrouped(true)
         toast.success('分组已应用到配置')
       }
     } catch (error) {
@@ -1716,10 +1776,9 @@ function SubscriptionGeneratorPage() {
       // 修复 short-id 空值显示
       finalConfig = fixShortIdInYaml(finalConfig)
 
-      setClashConfig(finalConfig)
+      setClashConfig(finalConfig, true)
       setGroupDialogOpen(false)
       setMissingNodesDialogOpen(false)
-      setHasManuallyGrouped(true)
       setPendingConfigAfterGrouping('')
       setMissingNodes([])
       toast.success(`已将缺失节点替换为 ${replacementChoice}`)
@@ -2063,8 +2122,7 @@ function SubscriptionGeneratorPage() {
         }
       }
 
-      setClashConfig(newConfig)
-      setHasManuallyGrouped(true)
+      setClashConfig(newConfig, true)
 
       // 统计分组结果
       const stats = Object.entries(regionNodes)
@@ -2845,9 +2903,10 @@ function SubscriptionGeneratorPage() {
                       <p className='text-sm text-muted-foreground'>
                         选择要包含在订阅中的节点标签（已选择 {selectedV3Tags.length} 个）
                       </p>
-                      <div className='flex flex-wrap gap-2'>
+                      <div role='group' aria-label='V3 节点标签' className='flex flex-wrap gap-2'>
                         <Button
                           variant={selectedV3Tags.length === 0 ? 'default' : 'outline'}
+                          aria-pressed={selectedV3Tags.length === 0}
                           size='sm'
                           onClick={() => setSelectedV3Tags([])}
                         >
@@ -2860,6 +2919,7 @@ function SubscriptionGeneratorPage() {
                             <Button
                               key={tag}
                               variant={isSelected ? 'default' : 'outline'}
+                              aria-pressed={isSelected}
                               size='sm'
                               onClick={() => {
                                 if (isSelected) {
@@ -2905,7 +2965,7 @@ function SubscriptionGeneratorPage() {
                       {loading ? '生成中...' : '生成订阅文件'}
                     </Button>
                   </div>
-                  <Button variant='outline' onClick={handleClear}>
+                  <Button variant='outline' onClick={handleClear} disabled={loading}>
                     清空
                   </Button>
                 </div>
@@ -2986,21 +3046,31 @@ function SubscriptionGeneratorPage() {
                     <CardDescription>
                       大配置默认虚拟滚动预览，需要时可再编辑
                     </CardDescription>
+                    {v3SourceLabel && (
+                      <CardDescription className='break-all'>
+                        {v3SourceLabel}
+                      </CardDescription>
+                    )}
+                    {v3SelectionChanged && (
+                      <p role='status' className='text-muted-foreground mt-2 text-sm'>
+                        当前预览沿用生成时的模板和标签。按现在的选择重新加载模板，可更新此预览。
+                      </p>
+                    )}
                   </div>
                   <ButtonGroup mode='responsive' hideIconOnMobile>
-                    {(!isV3Mode || ruleMode === 'custom') && (
+                    {!v3Source && (
                       <>
-                        <Button variant='outline' size='sm' onClick={handleAutoGroupByRegion}>
+                        <Button variant='outline' size='sm' onClick={handleAutoGroupByRegion} disabled={loading}>
                           <MapPin className='h-4 w-4' />
                           地域分组
                         </Button>
-                        <Button variant='outline' size='sm' onClick={handleOpenGroupDialog}>
+                        <Button variant='outline' size='sm' onClick={handleOpenGroupDialog} disabled={loading}>
                           <Layers className='h-4 w-4' />
                           手动分组
                         </Button>
                       </>
                     )}
-                    <Button size='sm' onClick={handleOpenSaveDialog}>
+                    <Button size='sm' onClick={handleOpenSaveDialog} disabled={loading}>
                       <Save className='h-4 w-4' />
                       保存订阅
                     </Button>
@@ -3009,24 +3079,25 @@ function SubscriptionGeneratorPage() {
               </CardHeader>
               <CardContent>
                 <ClashConfigViewer
+                  key={revision}
                   value={clashConfig}
                   onChange={setClashConfig}
                   height={400}
                 />
                 <div className='mt-4 flex justify-end gap-2'>
-                  {(!isV3Mode || ruleMode === 'custom') && (
+                  {!v3Source && (
                     <>
-                      <Button variant='outline' onClick={handleAutoGroupByRegion}>
+                      <Button variant='outline' onClick={handleAutoGroupByRegion} disabled={loading}>
                         <MapPin className='mr-2 h-4 w-4' />
                         地域分组
                       </Button>
-                      <Button variant='outline' onClick={handleOpenGroupDialog}>
+                      <Button variant='outline' onClick={handleOpenGroupDialog} disabled={loading}>
                         <Layers className='mr-2 h-4 w-4' />
                         手动分组
                       </Button>
                     </>
                   )}
-                  <Button onClick={handleOpenSaveDialog}>
+                  <Button onClick={handleOpenSaveDialog} disabled={loading}>
                     <Save className='mr-2 h-4 w-4' />
                     保存订阅
                   </Button>
@@ -3046,14 +3117,28 @@ function SubscriptionGeneratorPage() {
       </main>
 
       {/* 保存订阅对话框 */}
-      <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
-        <DialogContent>
+      <Dialog
+        open={saveDialogOpen}
+        onOpenChange={(open) => {
+          if (!saveSubscribeMutation.isPending) setSaveDialogOpen(open)
+        }}
+      >
+        <DialogContent
+          className='max-h-[90svh] overflow-y-auto'
+          showCloseButton={!saveSubscribeMutation.isPending}
+          aria-busy={saveSubscribeMutation.isPending}
+        >
           <DialogHeader>
             <DialogTitle>保存为订阅</DialogTitle>
             <DialogDescription>
               将生成的配置保存为订阅文件，保存后可以在订阅管理中查看和使用
             </DialogDescription>
           </DialogHeader>
+          {v3SourceLabel && (
+            <p className='text-muted-foreground text-sm break-all'>
+              {v3SourceLabel}
+            </p>
+          )}
           <div className='space-y-4 py-4'>
             <div className='space-y-2'>
               <Label htmlFor='subscribe-name'>
@@ -3061,6 +3146,7 @@ function SubscriptionGeneratorPage() {
               </Label>
               <Input
                 id='subscribe-name'
+                disabled={saveSubscribeMutation.isPending}
                 placeholder='例如：我的订阅'
                 value={subscribeName}
                 onChange={(e) => setSubscribeName(e.target.value)}
@@ -3070,6 +3156,7 @@ function SubscriptionGeneratorPage() {
               <Label htmlFor='subscribe-filename'>文件名（可选）</Label>
               <Input
                 id='subscribe-filename'
+                disabled={saveSubscribeMutation.isPending}
                 placeholder='默认使用订阅名称'
                 value={subscribeFilename}
                 onChange={(e) => setSubscribeFilename(e.target.value)}
@@ -3082,6 +3169,7 @@ function SubscriptionGeneratorPage() {
               <Label htmlFor='subscribe-description'>说明（可选）</Label>
               <Textarea
                 id='subscribe-description'
+                disabled={saveSubscribeMutation.isPending}
                 placeholder='订阅说明...'
                 value={subscribeDescription}
                 onChange={(e) => setSubscribeDescription(e.target.value)}
@@ -3089,13 +3177,18 @@ function SubscriptionGeneratorPage() {
               />
             </div>
           </div>
+          {saveSubscribeMutation.isError && (
+            <p role='alert' className='text-destructive text-sm'>
+              保存订阅失败，已保留你的输入。可以修改后重试。
+            </p>
+          )}
           <DialogFooter>
-            <Button variant='outline' onClick={() => setSaveDialogOpen(false)}>
+            <Button variant='outline' onClick={() => setSaveDialogOpen(false)} disabled={saveSubscribeMutation.isPending}>
               取消
             </Button>
-            <Button onClick={handleSaveSubscribe} disabled={saveSubscribeMutation.isPending}>
+            <Button onClick={handleSaveSubscribe} disabled={saveSubscribeMutation.isPending || !subscribeName.trim()}>
               {saveSubscribeMutation.isPending && <Loader2 className='mr-2 h-4 w-4 animate-spin' />}
-              保存
+              {saveSubscribeMutation.isPending ? '保存中…' : '保存'}
             </Button>
           </DialogFooter>
         </DialogContent>

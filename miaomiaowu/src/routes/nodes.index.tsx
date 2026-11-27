@@ -100,6 +100,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import {
   Collapsible,
   CollapsibleContent,
@@ -826,6 +827,10 @@ function NodesPage() {
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<number>>(() =>
     getStoredSelectedIds()
   )
+  const [batchDeleteTarget, setBatchDeleteTarget] = useState<{
+    ids: number[]
+    outsideFilterCount: number
+  } | null>(null)
   const [batchTagDialogOpen, setBatchTagDialogOpen] = useState(false)
   const [batchTagMode, setBatchTagMode] = useState<'add' | 'rename' | 'delete'>(
     'add'
@@ -1903,6 +1908,34 @@ function NodesPage() {
   })
 
   const isDeletingNode = deleteMutation.isPending
+
+  const batchDeleteMutation = useMutation({
+    networkMode: 'always',
+    mutationFn: async (ids: number[]) => {
+      const { data } = await api.post<{ deleted: number; total: number }>(
+        '/api/admin/nodes/batch-delete',
+        { node_ids: ids }
+      )
+      return data
+    },
+    onSuccess: ({ deleted, total }, ids) => {
+      if (deleted === total) {
+        setSelectedNodeIds((previous) => {
+          const next = new Set(previous)
+          for (const id of ids) next.delete(id)
+          return next
+        })
+        toast.success('成功删除 ' + deleted + ' 个节点')
+      } else {
+        toast.warning('已删除 ' + deleted + '/' + total + ' 个节点')
+      }
+      setBatchDeleteTarget(null)
+      void queryClient.invalidateQueries({ queryKey: ['nodes'] })
+    },
+    onError: (error: { response?: { data?: { error?: string } } }) => {
+      toast.error(error.response?.data?.error || '批量删除失败')
+    },
+  })
 
   // 清空所有节点
   const clearAllMutation = useMutation({
@@ -3394,6 +3427,36 @@ function NodesPage() {
   }, [listNodes, selectedProtocol, tagFilter, searchTerm])
 
   const deferredFilteredNodes = useDeferredValue(filteredNodes)
+  const filterUpdating = deferredFilteredNodes !== filteredNodes
+  const filteredSavedNodeIds = useMemo(() => {
+    const ids = new Set<number>()
+    for (const node of filteredNodes) {
+      if (node.isSaved && node.dbId) ids.add(node.dbId)
+    }
+    return ids
+  }, [filteredNodes])
+  const selectedInFilterCount = useMemo(() => {
+    let count = 0
+    for (const id of selectedNodeIds) {
+      if (filteredSavedNodeIds.has(id)) count++
+    }
+    return count
+  }, [filteredSavedNodeIds, selectedNodeIds])
+  const selectedOutsideFilterCount = selectedNodeIds.size - selectedInFilterCount
+  const allFilteredNodesSelected =
+    filteredSavedNodeIds.size > 0 &&
+    filteredSavedNodeIds.size === selectedInFilterCount
+
+  const toggleFilteredNodeSelection = () => {
+    setSelectedNodeIds((previous) => {
+      const next = new Set(previous)
+      for (const id of filteredSavedNodeIds) {
+        if (allFilteredNodesSelected) next.delete(id)
+        else next.add(id)
+      }
+      return next
+    })
+  }
 
   // 筛选变化时回到第 1 页
   useEffect(() => {
@@ -4211,61 +4274,73 @@ vless://uuid@example.com:443?type=ws&security=tls&path=/websocket#VLESS节点
                         >
                           生成临时订阅 ({selectedNodeIds.size})
                         </Button>
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <Button variant='destructive' size='sm'>
+                        <ConfirmDialog
+                          open={batchDeleteTarget !== null}
+                          onOpenChange={(open) => {
+                            if (batchDeleteMutation.isPending) return
+                            if (!open) {
+                              setBatchDeleteTarget(null)
+                              return
+                            }
+                            const ids = Array.from(selectedNodeIds).filter(
+                              (id) => nodeIdToName.has(id)
+                            )
+                            if (ids.length === 0) return
+                            batchDeleteMutation.reset()
+                            setBatchDeleteTarget({
+                              ids,
+                              outsideFilterCount: ids.filter(
+                                (id) => !filteredSavedNodeIds.has(id)
+                              ).length,
+                            })
+                          }}
+                          trigger={
+                            <Button
+                              variant='destructive'
+                              size='sm'
+                              disabled={
+                                filterUpdating || clearAllMutation.isPending
+                              }
+                            >
                               批量删除 ({selectedNodeIds.size})
                             </Button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent>
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>
-                                确认批量删除节点
-                              </AlertDialogTitle>
-                              <AlertDialogDescription>
-                                确定要删除选中的 {selectedNodeIds.size}{' '}
+                          }
+                          title='确认批量删除节点'
+                          desc={
+                            <div className='space-y-2'>
+                              <p>
+                                确定要删除选中的 {batchDeleteTarget?.ids.length}{' '}
                                 个节点吗？此操作不可撤销。
-                              </AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel>取消</AlertDialogCancel>
-                              <AlertDialogAction
-                                onClick={() => {
-                                  // 使用批量删除 API
-                                  const ids = Array.from(selectedNodeIds)
-                                  api
-                                    .post('/api/admin/nodes/batch-delete', {
-                                      node_ids: ids,
-                                    })
-                                    .then((response) => {
-                                      queryClient.invalidateQueries({
-                                        queryKey: ['nodes'],
-                                      })
-                                      setSelectedNodeIds(new Set())
-                                      const { deleted, total } = response.data
-                                      if (deleted === total) {
-                                        toast.success(
-                                          `成功删除 ${deleted} 个节点`
-                                        )
-                                      } else {
-                                        toast.success(
-                                          `成功删除 ${deleted}/${total} 个节点`
-                                        )
-                                      }
-                                    })
-                                    .catch((error) => {
-                                      toast.error(
-                                        error.response?.data?.error ||
-                                          '批量删除失败'
-                                      )
-                                    })
-                                }}
-                              >
-                                确认删除
-                              </AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
+                              </p>
+                              {batchDeleteTarget &&
+                                batchDeleteTarget.outsideFilterCount > 0 && (
+                                  <p className='text-destructive'>
+                                    其中 {batchDeleteTarget.outsideFilterCount}{' '}
+                                    个节点不在当前筛选结果中。
+                                  </p>
+                                )}
+                            </div>
+                          }
+                          cancelBtnText='取消'
+                          confirmText={
+                            batchDeleteMutation.isPending
+                              ? '删除中…'
+                              : '确认删除'
+                          }
+                          destructive
+                          isLoading={batchDeleteMutation.isPending}
+                          handleConfirm={() => {
+                            if (batchDeleteTarget) {
+                              batchDeleteMutation.mutate(batchDeleteTarget.ids)
+                            }
+                          }}
+                        >
+                          {batchDeleteMutation.isError && (
+                            <p role='alert' className='text-destructive text-sm'>
+                              批量删除失败，已保留选择，可以重试。
+                            </p>
+                          )}
+                        </ConfirmDialog>
                       </>
                     )}
                     {savedNodes.length > 0 && (
@@ -4398,35 +4473,7 @@ vless://uuid@example.com:443?type=ws&security=tls&path=/websocket#VLESS节点
                         <Button
                           size='sm'
                           variant={tagFilter === 'all' ? 'default' : 'outline'}
-                          onClick={() => {
-                            setTagFilter('all')
-                            // 计算应该选中的节点
-                            const nodesToSelect = displayNodes
-                              .filter((n) => n.isSaved && n.dbId)
-                              .filter(
-                                (n) =>
-                                  selectedProtocol === 'all' ||
-                                  n.dbNode?.protocol?.toLowerCase() ===
-                                    selectedProtocol
-                              )
-                            const nodeIdsToSelect = new Set(
-                              nodesToSelect.map((n) => n.dbId!)
-                            )
-
-                            // 如果当前选中的节点和应该选中的节点完全一致，则取消选中
-                            const currentIds =
-                              Array.from(selectedNodeIds).sort()
-                            const targetIds = Array.from(nodeIdsToSelect).sort()
-                            if (
-                              tagFilter === 'all' &&
-                              currentIds.length === targetIds.length &&
-                              currentIds.every((id, i) => id === targetIds[i])
-                            ) {
-                              setSelectedNodeIds(new Set())
-                            } else {
-                              setSelectedNodeIds(nodeIdsToSelect)
-                            }
-                          }}
+                          onClick={() => setTagFilter('all')}
                         >
                           全部 ({tagCounts.all})
                         </Button>
@@ -4449,43 +4496,7 @@ vless://uuid@example.com:443?type=ws&security=tls&path=/websocket#VLESS节点
                                 tag={tag}
                                 count={tagCounts[tag]}
                                 isActive={tagFilter === tag}
-                                onClick={() => {
-                                  setTagFilter(tag)
-                                  // 计算应该选中的节点
-                                  const nodesToSelect = displayNodes
-                                    .filter(
-                                      (n) =>
-                                        n.isSaved &&
-                                        n.dbId &&
-                                        n.dbNode?.tags?.includes(tag)
-                                    )
-                                    .filter(
-                                      (n) =>
-                                        selectedProtocol === 'all' ||
-                                        n.dbNode?.protocol?.toLowerCase() ===
-                                          selectedProtocol
-                                    )
-                                  const nodeIdsToSelect = new Set(
-                                    nodesToSelect.map((n) => n.dbId!)
-                                  )
-
-                                  // 如果当前选中的节点和应该选中的节点完全一致，则取消选中
-                                  const currentIds =
-                                    Array.from(selectedNodeIds).sort()
-                                  const targetIds =
-                                    Array.from(nodeIdsToSelect).sort()
-                                  if (
-                                    tagFilter === tag &&
-                                    currentIds.length === targetIds.length &&
-                                    currentIds.every(
-                                      (id, i) => id === targetIds[i]
-                                    )
-                                  ) {
-                                    setSelectedNodeIds(new Set())
-                                  } else {
-                                    setSelectedNodeIds(nodeIdsToSelect)
-                                  }
-                                }}
+                                onClick={() => setTagFilter(tag)}
                               />
                             ))}
                           </SortableContext>
@@ -4566,6 +4577,39 @@ vless://uuid@example.com:443?type=ws&security=tls&path=/websocket#VLESS节点
                       </div>
                     </div>
                   </div>
+                </div>
+
+                <div className='flex flex-wrap items-center gap-2'>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    disabled={filterUpdating || filteredSavedNodeIds.size === 0}
+                    onClick={toggleFilteredNodeSelection}
+                  >
+                    {allFilteredNodesSelected
+                      ? '取消选择筛选结果'
+                      : '全选筛选结果'}{' '}
+                    ({filteredSavedNodeIds.size})
+                  </Button>
+                  {selectedNodeIds.size > 0 && (
+                    <Button
+                      type='button'
+                      variant='ghost'
+                      size='sm'
+                      onClick={() => setSelectedNodeIds(new Set())}
+                    >
+                      清除选择
+                    </Button>
+                  )}
+                  <p role='status' className='text-muted-foreground text-xs'>
+                    已选 {selectedNodeIds.size} 个节点
+                    {selectedOutsideFilterCount > 0 && (
+                      <>
+                        ，其中 {selectedOutsideFilterCount} 个不在当前筛选结果中
+                      </>
+                    )}
+                  </p>
                 </div>
 
                 {/* 节点列表区域 - 包含Loading overlay */}

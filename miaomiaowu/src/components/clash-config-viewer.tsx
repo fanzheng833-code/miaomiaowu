@@ -3,6 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { Check, Copy, Download, Eye, Pencil } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { cn } from '@/lib/utils'
 
 type ClashConfigViewerProps = {
@@ -77,12 +78,11 @@ export const ClashConfigViewer = memo(function ClashConfigViewer({
 
   const handleCopy = useCallback(async () => {
     const text = mode === 'edit' ? draft : value
-    try {
-      await navigator.clipboard.writeText(text)
+    if (await copyTextToClipboard(text)) {
       setCopied(true)
       toast.success('配置已复制到剪贴板')
       window.setTimeout(() => setCopied(false), 1500)
-    } catch {
+    } else {
       toast.error('复制失败，请手动选择文本')
     }
   }, [draft, mode, value])
