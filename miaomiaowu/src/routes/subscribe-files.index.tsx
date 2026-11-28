@@ -357,6 +357,9 @@ function SubscribeFilesPage() {
 
   // 编辑配置状态
   const [configDraft, setConfigContent] = useState<string | null>(null)
+  const [discardConfigDraftOpen, setDiscardConfigDraftOpen] = useState(false)
+  const configEditorFocusRef = useRef<HTMLElement | null>(null)
+  const configEditorSessionRef = useRef<{ trigger: HTMLButtonElement } | null>(null)
   const [showConfigHistory, setShowConfigHistory] = useState(false)
   const [loadedConfigVersion, setLoadedConfigVersion] = useState<number | null>(null)
 
@@ -1542,6 +1545,8 @@ function SubscribeFilesPage() {
   })
 
   const closeConfigEditor = () => {
+    configEditorFocusRef.current = null
+    setDiscardConfigDraftOpen(false)
     setEditConfigDialogOpen(false)
     setEditingConfigFile(null)
     setConfigContent(null)
@@ -1568,6 +1573,19 @@ function SubscribeFilesPage() {
       handleServerError(error)
     },
   })
+
+  const requestCloseConfigEditor = () => {
+    if (saveConfigMutation.isPending) return
+    if (configHasDraft) {
+      const focused = document.activeElement
+      configEditorFocusRef.current = focused instanceof HTMLElement && focused.closest('[role="dialog"]')
+        ? focused
+        : null
+      setDiscardConfigDraftOpen(true)
+      return
+    }
+    closeConfigEditor()
+  }
 
 
 
@@ -1824,7 +1842,8 @@ const handleUpload = () => {
     })
   }
 
-  const handleEditConfig = (file: SubscribeFile) => {
+  const handleEditConfig = (file: SubscribeFile, trigger: HTMLButtonElement) => {
+    configEditorSessionRef.current = { trigger }
     saveConfigMutation.reset()
     setConfigContent(null)
     setShowConfigHistory(false)
@@ -1885,6 +1904,26 @@ const handleUpload = () => {
     setShowAllNodes(false)
   }
 
+  const saveNodesConfig = async (
+    filename: string,
+    content: string,
+    editorSession: typeof configEditorSessionRef.current
+  ) => {
+    await api.put(`/api/admin/subscribe-files/${encodeURIComponent(filename)}/content`, { content })
+
+    const contentKey = ['subscribe-file-content', filename]
+    await queryClient.cancelQueries({ queryKey: contentKey, exact: true })
+    queryClient.setQueryData(contentKey, { content })
+    queryClient.setQueryData(['nodes-config-content', filename], { content })
+    if (editorSession && configEditorSessionRef.current === editorSession && editingConfigFile?.filename === filename) {
+      setConfigContent((currentDraft) => currentDraft === configDraft ? null : currentDraft)
+    }
+    // Read back the authoritative file because the server can normalize YAML text.
+    void queryClient.invalidateQueries({ queryKey: contentKey, exact: true })
+    void queryClient.invalidateQueries({ queryKey: ['subscribe-file-history', filename], exact: true })
+    void queryClient.invalidateQueries({ queryKey: ['subscribe-files'] })
+  }
+
   // 验证 rules 中的节点是否存在于 proxy-groups 或 proxies 中
   const validateRulesNodes = (parsedConfig: any) => {
     const rules = parsedConfig.rules || []
@@ -1930,6 +1969,7 @@ const handleUpload = () => {
 
   // 应用缺失节点替换
   const handleApplyReplacement = async () => {
+    if (!editingNodesFile) return
     try {
       const parsedConfig = parseYAML(pendingConfigAfterSave) as any
       const rules = parsedConfig.rules || []
@@ -1974,19 +2014,7 @@ const handleUpload = () => {
       const finalConfig = dumpYAML(parsedConfig, { lineWidth: -1, noRefs: true })
 
       // 保存到文件
-      if (editingNodesFile) {
-        await api.put(`/api/admin/subscribe-files/${encodeURIComponent(editingNodesFile.filename)}/content`, {
-          content: finalConfig,
-        })
-      }
-
-      setConfigContent(finalConfig)
-
-      // 更新查询缓存
-      queryClient.setQueryData(['nodes-config-content', editingNodesFile?.filename], {
-        content: finalConfig
-      })
-      queryClient.invalidateQueries({ queryKey: ['subscribe-files'] })
+      await saveNodesConfig(editingNodesFile.filename, finalConfig, configEditorSessionRef.current)
 
       // 关闭替换对话框和编辑节点对话框
       setMissingNodesDialogOpen(false)
@@ -2004,6 +2032,7 @@ const handleUpload = () => {
 
   const handleSaveNodes = async () => {
     if (!editingNodesFile) return
+    const editorSession = configEditorSessionRef.current
 
     // 使用当前的 configContent（可能已经被 handleRenameGroup 修改过），如果没有则使用查询数据
     const currentContent = configContent || nodesConfigQuery.data?.content
@@ -2565,14 +2594,7 @@ const handleUpload = () => {
         setMissingNodesDialogOpen(true)
       } else {
         // 没有缺失节点，直接保存到文件
-        await api.put(`/api/admin/subscribe-files/${encodeURIComponent(editingNodesFile.filename)}/content`, {
-          content: newContent,
-        })
-        setConfigContent(newContent)
-        queryClient.setQueryData(['nodes-config-content', editingNodesFile?.filename], {
-          content: newContent
-        })
-        queryClient.invalidateQueries({ queryKey: ['subscribe-files'] })
+        await saveNodesConfig(editingNodesFile.filename, newContent, editorSession)
         setEditNodesDialogOpen(false)
         if (editingNodesFile) {
           localStorage.removeItem(EDIT_NODES_DRAFT_KEY_PREFIX + editingNodesFile.id)
@@ -3958,7 +3980,7 @@ const handleUpload = () => {
                           variant='ghost'
                           size='sm'
                           aria-label='编辑配置'
-                          onClick={() => handleEditConfig(file)}
+                          onClick={(event) => handleEditConfig(file, event.currentTarget)}
                         >
                           <Edit className='h-4 w-4' />
                         </Button>
@@ -4341,7 +4363,7 @@ const handleUpload = () => {
                         variant='outline'
                         size='sm'
                         className='flex-1'
-                        onClick={() => handleEditConfig(file)}
+                        onClick={(event) => handleEditConfig(file, event.currentTarget)}
                       >
                         <Edit className='mr-1 h-4 w-4' />
                         编辑配置
@@ -5848,19 +5870,30 @@ const handleUpload = () => {
       <Dialog
         open={editConfigDialogOpen}
         onOpenChange={(open) => {
-          if (!open && !saveConfigMutation.isPending) closeConfigEditor()
+          if (!open) requestCloseConfigEditor()
         }}
       >
         <DialogContent
           className='w-[95vw] sm:w-[80vw] sm:!max-w-[80vw] max-h-[90svh] flex flex-col'
           showCloseButton={!saveConfigMutation.isPending}
           aria-busy={saveConfigMutation.isPending}
+          onCloseAutoFocus={(event) => {
+            const trigger = configEditorSessionRef.current?.trigger
+            configEditorSessionRef.current = null
+            if (trigger?.isConnected) {
+              event.preventDefault()
+              trigger.focus()
+            }
+          }}
         >
           <DialogHeader>
             <DialogTitle>编辑配置 - {editingConfigFile?.name}</DialogTitle>
             <DialogDescription>
               {editingConfigFile?.filename}
             </DialogDescription>
+            {configHasDraft && (
+              <p className='text-muted-foreground text-xs'>修改尚未保存</p>
+            )}
             <div className='flex flex-wrap gap-2 justify-center md:justify-end'>
               {showConfigHistory ? (
                 <Button variant='outline' size='sm' onClick={() => setShowConfigHistory(false)}>
@@ -5928,7 +5961,7 @@ const handleUpload = () => {
                 {configFileContentQuery.isPending && (
                   <p role='status' className='text-muted-foreground text-sm'>正在读取配置…</p>
                 )}
-                {loadedConfigVersion !== null && (
+                {loadedConfigVersion !== null && configHasDraft && (
                   <p role='status' className='text-muted-foreground text-sm'>
                     已载入 v{loadedConfigVersion}。提交保存后会创建新版本。
                   </p>
@@ -5951,6 +5984,28 @@ const handleUpload = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={discardConfigDraftOpen} onOpenChange={setDiscardConfigDraftOpen}>
+        <AlertDialogContent
+          onCloseAutoFocus={(event) => {
+            const focused = configEditorFocusRef.current
+            configEditorFocusRef.current = null
+            if (focused?.isConnected) {
+              event.preventDefault()
+              focused.focus()
+            }
+          }}
+        >
+          <AlertDialogHeader>
+            <AlertDialogTitle>有未保存的修改</AlertDialogTitle>
+            <AlertDialogDescription>关闭编辑器会丢弃本次修改。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>继续编辑</AlertDialogCancel>
+            <AlertDialogAction onClick={closeConfigEditor}>放弃修改</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* 编辑节点对话框 */}
       {!isMobile ? (
