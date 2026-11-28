@@ -34,6 +34,7 @@ import { cn } from '@/lib/utils'
 import { Copy, Layers} from 'lucide-react'
 import { Upload, Download, Edit, Settings, FileText, Save, Trash2, RefreshCw, ChevronDown, ChevronUp, ExternalLink, Eye, Calendar as CalendarIcon, Plus, Check, Ban, Info, Clock } from 'lucide-react'
 import { EditNodesDialog } from '@/components/edit-nodes-dialog'
+import { SubscriptionVersionHistory } from '@/components/subscription-version-history'
 import { MobileEditNodesDialog } from '@/components/mobile-edit-nodes-dialog'
 import { Twemoji } from '@/components/twemoji'
 import { useProxyGroupCategories } from '@/hooks/use-proxy-groups'
@@ -355,7 +356,9 @@ function SubscribeFilesPage() {
   const [validationError, setValidationError] = useState<string | null>(null)
 
   // 编辑配置状态
-  const [configContent, setConfigContent] = useState('')
+  const [configDraft, setConfigContent] = useState<string | null>(null)
+  const [showConfigHistory, setShowConfigHistory] = useState(false)
+  const [loadedConfigVersion, setLoadedConfigVersion] = useState<number | null>(null)
 
   // 缺失节点替换对话框状态
   const [missingNodesDialogOpen, setMissingNodesDialogOpen] = useState(false)
@@ -1454,14 +1457,26 @@ function SubscribeFilesPage() {
   // 查询配置文件内容（编辑配置用）
   const configFileContentQuery = useQuery({
     queryKey: ['subscribe-file-content', editingConfigFile?.filename],
-    queryFn: async () => {
-      if (!editingConfigFile) return null
-      const response = await api.get(`/api/admin/subscribe-files/${encodeURIComponent(editingConfigFile.filename)}/content`)
-      return response.data as { content: string }
+    queryFn: async ({ signal }) => {
+      if (!editingConfigFile) throw new Error('请选择订阅文件')
+      const { data } = await api.get<{ content: string }>(
+        `/api/admin/subscribe-files/${encodeURIComponent(editingConfigFile.filename)}/content`,
+        { signal }
+      )
+      if (typeof data?.content !== 'string') throw new Error('配置内容无效')
+      return data
     },
-    enabled: Boolean(editingConfigFile && auth.accessToken),
+    enabled: Boolean(editConfigDialogOpen && editingConfigFile && auth.accessToken),
+    retry: false,
     refetchOnWindowFocus: false,
+    meta: { showErrorInPage: true },
   })
+  const savedConfigContent = configFileContentQuery.data?.content
+  const configContent = configDraft ?? savedConfigContent ?? ''
+  const configContentReady = savedConfigContent !== undefined &&
+    !configFileContentQuery.isError && !configFileContentQuery.isFetching
+  const configHasDraft = savedConfigContent !== undefined && configContent !== savedConfigContent
+  const configHasHistory = Boolean(editingConfigFile && /\.ya?ml$/i.test(editingConfigFile.filename))
 
   // 查询节点列表（编辑节点用）
   const nodesQuery = useQuery({
@@ -1526,6 +1541,14 @@ function SubscribeFilesPage() {
     },
   })
 
+  const closeConfigEditor = () => {
+    setEditConfigDialogOpen(false)
+    setEditingConfigFile(null)
+    setConfigContent(null)
+    setShowConfigHistory(false)
+    setLoadedConfigVersion(null)
+  }
+
   // 保存配置文件内容
   const saveConfigMutation = useMutation({
     mutationFn: async (payload: { filename: string; content: string }) => {
@@ -1534,13 +1557,12 @@ function SubscribeFilesPage() {
       })
       return response.data
     },
-    onSuccess: () => {
+    onSuccess: (_, { filename }) => {
       toast.success('配置已保存')
-      queryClient.invalidateQueries({ queryKey: ['subscribe-file-content', editingConfigFile?.filename] })
+      queryClient.invalidateQueries({ queryKey: ['subscribe-file-content', filename] })
+      queryClient.invalidateQueries({ queryKey: ['subscribe-file-history', filename] })
       queryClient.invalidateQueries({ queryKey: ['subscribe-files'] })
-      setEditConfigDialogOpen(false)
-      setEditingConfigFile(null)
-      setConfigContent('')
+      closeConfigEditor()
     },
     onError: (error) => {
       handleServerError(error)
@@ -1579,12 +1601,6 @@ function SubscribeFilesPage() {
 
     return () => clearTimeout(timer)
   }, [editorValue, editingFile, fileContentQuery.isLoading])
-
-  // 加载配置文件内容
-  useEffect(() => {
-    if (!configFileContentQuery.data) return
-    setConfigContent(configFileContentQuery.data.content ?? '')
-  }, [configFileContentQuery.data])
 
   // 解析YAML配置并提取代理组（编辑节点用）
   useEffect(() => {
@@ -1809,12 +1825,16 @@ const handleUpload = () => {
   }
 
   const handleEditConfig = (file: SubscribeFile) => {
+    saveConfigMutation.reset()
+    setConfigContent(null)
+    setShowConfigHistory(false)
+    setLoadedConfigVersion(null)
     setEditingConfigFile(file)
     setEditConfigDialogOpen(true)
   }
 
   const handleSaveConfig = () => {
-    if (!editingConfigFile) return
+    if (!editingConfigFile || !configContentReady || !configHasDraft || saveConfigMutation.isPending) return
 
     let parsed: any
     try {
@@ -3937,6 +3957,7 @@ const handleUpload = () => {
                         <Button
                           variant='ghost'
                           size='sm'
+                          aria-label='编辑配置'
                           onClick={() => handleEditConfig(file)}
                         >
                           <Edit className='h-4 w-4' />
@@ -5824,65 +5845,109 @@ const handleUpload = () => {
       </Dialog>
 
       {/* 编辑配置对话框 */}
-      <Dialog open={editConfigDialogOpen} onOpenChange={(open) => {
-        setEditConfigDialogOpen(open)
-        if (!open) {
-          setEditingConfigFile(null)
-          setConfigContent('')
-        }
-      }}>
-        <DialogContent className='w-[95vw] sm:w-[80vw] sm:!max-w-[80vw] max-h-[90vh] flex flex-col'>
+      <Dialog
+        open={editConfigDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && !saveConfigMutation.isPending) closeConfigEditor()
+        }}
+      >
+        <DialogContent
+          className='w-[95vw] sm:w-[80vw] sm:!max-w-[80vw] max-h-[90svh] flex flex-col'
+          showCloseButton={!saveConfigMutation.isPending}
+          aria-busy={saveConfigMutation.isPending}
+        >
           <DialogHeader>
             <DialogTitle>编辑配置 - {editingConfigFile?.name}</DialogTitle>
             <DialogDescription>
               {editingConfigFile?.filename}
             </DialogDescription>
-            <div className='flex gap-2 justify-center md:justify-end'>
-              <Button
-                variant='outline'
-                size='sm'
-                className='flex-1 md:flex-none'
-                onClick={() => handleEditNodes(editingConfigFile!)}
-              >
-                <Edit className='mr-2 h-4 w-4' />
-                编辑节点
-              </Button>
-              <Button
-                size='sm'
-                className='flex-1 md:flex-none'
-                onClick={handleSaveConfig}
-                disabled={saveConfigMutation.isPending}
-              >
-                <Save className='mr-2 h-4 w-4' />
-                {saveConfigMutation.isPending ? '保存中...' : '保存'}
-              </Button>
+            <div className='flex flex-wrap gap-2 justify-center md:justify-end'>
+              {showConfigHistory ? (
+                <Button variant='outline' size='sm' onClick={() => setShowConfigHistory(false)}>
+                  返回编辑
+                </Button>
+              ) : (
+                <>
+                  {configHasHistory && (
+                    <Button variant='outline' size='sm' disabled={saveConfigMutation.isPending} onClick={() => setShowConfigHistory(true)}>
+                      <Clock aria-hidden='true' className='size-4' />
+                      版本记录
+                    </Button>
+                  )}
+                  <Button
+                    variant='outline'
+                    size='sm'
+                    disabled={!configContentReady || saveConfigMutation.isPending}
+                    onClick={() => editingConfigFile && handleEditNodes(editingConfigFile)}
+                  >
+                    <Edit aria-hidden='true' className='size-4' />
+                    编辑节点
+                  </Button>
+                  <Button
+                    size='sm'
+                    onClick={handleSaveConfig}
+                    disabled={!configContentReady || !configHasDraft || saveConfigMutation.isPending}
+                  >
+                    <Save aria-hidden='true' className='size-4' />
+                    {saveConfigMutation.isPending ? '保存中…' : '保存'}
+                  </Button>
+                </>
+              )}
             </div>
           </DialogHeader>
-          <div className='flex-1 overflow-y-auto space-y-4'>
-
-            <div className='rounded-lg border bg-muted/30'>
-              <Textarea
-                value={configContent}
-                onChange={(e) => setConfigContent(e.target.value)}
-                className='min-h-[400px] resize-none border-0 bg-transparent font-mono text-xs'
-                placeholder='加载配置中...'
+          <div className='min-h-0 flex-1 space-y-3 overflow-y-auto'>
+            {showConfigHistory && editingConfigFile ? (
+              <SubscriptionVersionHistory
+                key={editingConfigFile.filename}
+                filename={editingConfigFile.filename}
+                currentContent={configContent}
+                canLoad={configContentReady}
+                hasDraft={configHasDraft}
+                onLoad={(content, version) => {
+                  setConfigContent(content)
+                  setLoadedConfigVersion(version)
+                  setShowConfigHistory(false)
+                  saveConfigMutation.reset()
+                }}
               />
-            </div>
-            <div className='flex justify-end gap-2'>
-              <Button onClick={handleSaveConfig} disabled={saveConfigMutation.isPending}>
-                <Save className='mr-2 h-4 max-w-md' />
-                {saveConfigMutation.isPending ? '保存中...' : '保存'}
-              </Button>
-            </div>
-            <div className='rounded-lg border bg-muted/50 p-4'>
-              <h3 className='mb-2 font-semibold'>使用说明</h3>
-              <ul className='space-y-1 text-sm text-muted-foreground'>
-                <li>• 点击"保存"按钮将修改保存到配置文件</li>
-                <li>• 支持直接编辑 YAML 内容</li>
-                <li>• 保存前会自动验证 YAML 格式</li>
-                <li>• 支持 Clash、Clash Meta、Mihomo 等客户端</li>
-              </ul>
-            </div>
+            ) : (
+              <>
+                {configFileContentQuery.isError && (
+                  <div className='flex flex-wrap items-center justify-between gap-3 rounded-md border p-3'>
+                    <p role='alert' className='text-destructive text-sm'>读取配置失败。</p>
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      disabled={configFileContentQuery.isFetching}
+                      onClick={() => void configFileContentQuery.refetch()}
+                    >
+                      重试读取配置
+                    </Button>
+                  </div>
+                )}
+                {configFileContentQuery.isPending && (
+                  <p role='status' className='text-muted-foreground text-sm'>正在读取配置…</p>
+                )}
+                {loadedConfigVersion !== null && (
+                  <p role='status' className='text-muted-foreground text-sm'>
+                    已载入 v{loadedConfigVersion}。提交保存后会创建新版本。
+                  </p>
+                )}
+                {saveConfigMutation.isError && (
+                  <p role='alert' className='text-destructive text-sm'>保存失败，已保留修改。可以重试。</p>
+                )}
+                {savedConfigContent !== undefined && (
+                  <Textarea
+                    aria-label='配置内容'
+                    value={configContent}
+                    onChange={(e) => setConfigContent(e.target.value)}
+                    disabled={saveConfigMutation.isPending}
+                    className='bg-muted/30 h-[min(55svh,480px)] min-h-44 resize-none overflow-auto font-mono text-xs [field-sizing:fixed]'
+                    spellCheck={false}
+                  />
+                )}
+              </>
+            )}
           </div>
         </DialogContent>
       </Dialog>

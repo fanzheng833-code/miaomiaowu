@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute, redirect } from '@tanstack/react-router'
 import {
@@ -7,7 +7,9 @@ import {
   Monitor,
   Network,
   QrCode,
+  Search,
   Smartphone,
+  X,
 } from 'lucide-react'
 import { QRCodeCanvas } from 'qrcode.react'
 import { toast } from 'sonner'
@@ -125,6 +127,8 @@ const CLIENT_TYPES = [
 
 function SubscriptionPage() {
   const { auth } = useAuthStore()
+  const searchInput = useRef<HTMLInputElement>(null)
+  const [search, setSearch] = useState('')
   const [qrValue, setQrValue] = useState<string | null>(null)
   const [selectedFormats, setSelectedFormats] = useState<
     Record<number, string>
@@ -153,6 +157,14 @@ function SubscriptionPage() {
 
   const subscribeFiles = subscribeFilesData?.subscriptions ?? []
   const userShortCode = subscribeFilesData?.user_short_code ?? ''
+  const searchTerm = search.trim().toLowerCase()
+  const matchingFiles = searchTerm
+    ? subscribeFiles.filter((file) =>
+        [file.name, file.filename, file.description].some((value) =>
+          value?.toLowerCase().includes(searchTerm)
+        )
+      )
+    : subscribeFiles
 
   const needsUserToken = subscribeFiles.some(
     (file) =>
@@ -242,9 +254,58 @@ function SubscriptionPage() {
           </p>
         </section>
 
+        {subscribeFiles.length > 0 && (
+          <div className='mt-6 flex flex-wrap items-center gap-x-3 gap-y-2'>
+            <div className='relative w-full sm:w-80'>
+              <Search
+                className='text-muted-foreground inset-s-3 pointer-events-none absolute top-1/2 size-4 -translate-y-1/2'
+                aria-hidden='true'
+              />
+              <Input
+                ref={searchInput}
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === 'Escape' &&
+                    !event.nativeEvent.isComposing
+                  ) {
+                    setSearch('')
+                  }
+                }}
+                inputMode='search'
+                aria-label='搜索订阅'
+                placeholder='按名称、文件名或说明搜索'
+                className='ps-9 pe-10'
+              />
+              {search && (
+                <Button
+                  type='button'
+                  size='icon'
+                  variant='ghost'
+                  aria-label='清除搜索'
+                  title='清除搜索'
+                  className='inset-e-1 absolute top-1/2 size-8 -translate-y-1/2'
+                  onClick={() => {
+                    setSearch('')
+                    searchInput.current?.focus()
+                  }}
+                >
+                  <X aria-hidden='true' />
+                </Button>
+              )}
+            </div>
+            <span role='status' className='text-muted-foreground text-sm'>
+              {searchTerm
+                ? `匹配 ${matchingFiles.length} / ${subscribeFiles.length} 个订阅`
+                : `共 ${subscribeFiles.length} 个订阅`}
+            </span>
+          </div>
+        )}
+
         <section
           aria-busy={subscriptionsPending}
-          className='mt-8 grid gap-6 md:grid-cols-2 lg:grid-cols-3'
+          className='mt-5 grid gap-6 md:grid-cols-2 lg:grid-cols-3'
         >
           {(subscriptionsPending ||
             subscriptionsError ||
@@ -305,7 +366,15 @@ function SubscriptionPage() {
             </Card>
           )}
 
-          {subscribeFiles.map((file) => {
+          {subscribeFiles.length > 0 && matchingFiles.length === 0 && (
+            <Card className='col-span-full w-full border-dashed shadow-none'>
+              <CardHeader>
+                <CardTitle>没有匹配的订阅</CardTitle>
+              </CardHeader>
+            </Card>
+          )}
+
+          {matchingFiles.map((file) => {
             const Icon = ICON_MAP[file.name] ?? QrCode
             const selectedClient = file.raw_output
               ? undefined

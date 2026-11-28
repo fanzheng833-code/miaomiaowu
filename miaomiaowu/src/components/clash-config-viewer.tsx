@@ -25,7 +25,8 @@ import { Input } from '@/components/ui/input'
 
 type ClashConfigViewerProps = {
   value: string
-  onChange: (value: string) => void
+  onChange?: (value: string) => void
+  downloadFilename?: string
   className?: string
   height?: number
 }
@@ -45,6 +46,7 @@ function formatBytes(n: number): string {
 export const ClashConfigViewer = memo(function ClashConfigViewer({
   value,
   onChange,
+  downloadFilename = 'clash-config.yaml',
   className,
   height = 400,
 }: ClashConfigViewerProps) {
@@ -126,7 +128,7 @@ export const ClashConfigViewer = memo(function ClashConfigViewer({
 
   const applyEdit = useCallback(() => {
     editingRef.current = false
-    onChange(draft)
+    onChange?.(draft)
     setMode('view')
   }, [draft, onChange])
 
@@ -153,13 +155,13 @@ export const ClashConfigViewer = memo(function ClashConfigViewer({
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = 'clash-config.yaml'
+    a.download = downloadFilename
     document.body.appendChild(a)
     a.click()
     a.remove()
     URL.revokeObjectURL(url)
     toast.success('已开始下载配置文件')
-  }, [draft, mode, value])
+  }, [downloadFilename, draft, mode, value])
 
   return (
     <div className={cn('space-y-2', className)}>
@@ -194,7 +196,7 @@ export const ClashConfigViewer = memo(function ClashConfigViewer({
             <Download className='h-3.5 w-3.5' />
             <span className='ml-1'>下载</span>
           </Button>
-          {mode === 'view' ? (
+          {mode === 'view' && onChange && (
             <Button
               type='button'
               variant='outline'
@@ -205,7 +207,8 @@ export const ClashConfigViewer = memo(function ClashConfigViewer({
               <Pencil className='h-3.5 w-3.5' />
               <span className='ml-1'>编辑</span>
             </Button>
-          ) : (
+          )}
+          {mode === 'edit' && (
             <>
               <Button
                 type='button'
