@@ -43,6 +43,7 @@ const timeFormatter = new Intl.DateTimeFormat('zh-CN', {
   hour12: false,
 })
 const ranges = [7, 30] as const
+const dailyUsageDetailsId = 'daily-usage-details'
 const TrafficUsageChart = lazy(() => import('@/components/traffic-usage-chart'))
 
 export const Route = createFileRoute('/')({
@@ -57,6 +58,7 @@ export const Route = createFileRoute('/')({
 function DashboardPage() {
   const accessToken = useAuthStore((state) => state.auth.accessToken)
   const [range, setRange] = useState<(typeof ranges)[number]>(30)
+  const [showDailyUsage, setShowDailyUsage] = useState(false)
   const { data, dataUpdatedAt, isError, isFetching, isLoading, refetch } =
     useQuery({
       queryKey: ['traffic-summary'],
@@ -77,12 +79,22 @@ function DashboardPage() {
   const chartData = useMemo(() => {
     if (!history?.length) return []
 
-    // The API stores snapshots by UTC date.
-    const cutoff = new Date(today)
-    cutoff.setUTCDate(cutoff.getUTCDate() - range + 1)
-    const oldest = cutoff.toISOString().slice(0, 10)
-    return history.filter((entry) => entry.date >= oldest && entry.date <= today)
+    // Keep missing UTC dates on the timeline without assigning them usage.
+    const usageByDate = new Map(
+      history.map(({ date, used_gb }) => [date, used_gb])
+    )
+    const day = new Date(today)
+    day.setUTCDate(day.getUTCDate() - range + 1)
+    return Array.from({ length: range }, (): DailyUsage => {
+      const date = day.toISOString().slice(0, 10)
+      day.setUTCDate(day.getUTCDate() + 1)
+      const usage = usageByDate.get(date) ?? null
+      return { date, used_gb: Number.isFinite(usage) ? usage : null }
+    })
   }, [history, range, today])
+  const recordedDays = chartData.filter(
+    ({ used_gb }) => used_gb !== null
+  ).length
 
   const metrics = data?.metrics
   const cards = [
@@ -234,7 +246,7 @@ function DashboardPage() {
               <div className='mb-4 flex flex-wrap items-center justify-between gap-3'>
                 <div className='space-y-1'>
                   <h2 className='font-semibold'>每日流量消耗</h2>
-                  <p className='text-muted-foreground text-xs'>单位 GB</p>
+                  <p className='text-muted-foreground text-xs'>单位 GB · UTC</p>
                 </div>
                 <div
                   role='group'
@@ -259,7 +271,7 @@ function DashboardPage() {
               <div className='h-60 min-w-0 sm:h-80'>
                 {isLoading ? (
                   chartLoading
-                ) : chartData.length === 0 ? (
+                ) : recordedDays === 0 ? (
                   <div className='text-muted-foreground flex h-full flex-col items-center justify-center gap-2 text-center text-sm'>
                     <ChartNoAxesCombined
                       className='size-7'
@@ -278,6 +290,81 @@ function DashboardPage() {
                   </CatchBoundary>
                 )}
               </div>
+              {!isLoading && recordedDays > 0 && (
+                <div className='mt-3 border-t pt-3'>
+                  <div className='flex flex-wrap items-center justify-between gap-2'>
+                    <p className='text-muted-foreground text-xs tabular-nums'>
+                      已记录 {recordedDays}/{range} 天
+                    </p>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      aria-controls={dailyUsageDetailsId}
+                      aria-expanded={showDailyUsage}
+                      onClick={() => setShowDailyUsage((open) => !open)}
+                    >
+                      {showDailyUsage ? '收起每日明细' : '查看每日明细'}
+                    </Button>
+                  </div>
+                  <div id={dailyUsageDetailsId} hidden={!showDailyUsage}>
+                    {showDailyUsage && (
+                      <div
+                        role='region'
+                        aria-label='每日流量明细'
+                        tabIndex={0}
+                        className='mt-3 max-h-72 overflow-y-auto rounded-md border'
+                      >
+                        <table
+                          aria-label='每日流量明细'
+                          className='w-full text-sm tabular-nums'
+                        >
+                          <thead className='bg-card sticky top-0'>
+                            <tr className='border-b text-left'>
+                              <th scope='col' className='px-3 py-2 font-medium'>
+                                日期（UTC）
+                              </th>
+                              <th
+                                scope='col'
+                                className='px-3 py-2 text-right font-medium'
+                              >
+                                日消耗
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {chartData
+                              .slice()
+                              .reverse()
+                              .map(({ date, used_gb }) => (
+                                <tr
+                                  key={date}
+                                  className='border-b last:border-b-0'
+                                >
+                                  <th
+                                    scope='row'
+                                    className='px-3 py-2 text-left font-normal'
+                                  >
+                                    <time dateTime={date}>{date}</time>
+                                  </th>
+                                  <td className='px-3 py-2 text-right'>
+                                    {used_gb === null ? (
+                                      <span className='text-muted-foreground'>
+                                        未记录
+                                      </span>
+                                    ) : (
+                                      `${numberFormatter.format(used_gb)} GB`
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         </>

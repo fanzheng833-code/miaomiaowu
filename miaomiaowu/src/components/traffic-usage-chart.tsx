@@ -10,7 +10,7 @@ import {
 
 export interface DailyUsage {
   date: string
-  used_gb: number
+  used_gb: number | null
 }
 
 const numberFormatter = new Intl.NumberFormat('zh-CN', {
@@ -54,10 +54,11 @@ export default function TrafficUsageChart({ data }: { data: DailyUsage[] }) {
           tickFormatter={(value: number) => numberFormatter.format(value)}
         />
         <Tooltip
+          filterNull={false}
           formatter={(usage) =>
             typeof usage === 'number'
               ? `${numberFormatter.format(usage)} GB`
-              : '—'
+              : '未记录'
           }
           cursor={{ stroke: 'var(--chart-1)' }}
           contentStyle={{
@@ -75,7 +76,8 @@ export default function TrafficUsageChart({ data }: { data: DailyUsage[] }) {
           stroke='var(--chart-1)'
           fill='url(#daily-usage-fill)'
           strokeWidth={2}
-          dot={data.length === 1}
+          connectNulls={false}
+          dot={{ r: 2.5, strokeWidth: 0, fill: 'var(--chart-1)' }}
           isAnimationActive={false}
         />
       </AreaChart>
